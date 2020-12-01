@@ -11,6 +11,7 @@ const (
 	eventUpdateInitProgress
 	eventDCRDSyncStatus
 	eventServiceStatus
+	eventAppsUpdated
 )
 
 // customEvent implements oswin.Event

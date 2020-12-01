@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestFetchAsset(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
-	path, err := fetchAsset(ctx, tmpDir, asset)
+	path, err := fetchAsset(ctx, tmpDir, asset.URL, asset.Name)
 	if err != nil {
 		t.Fatalf("fetchAsset error: %v", err)
 	}
@@ -46,5 +47,18 @@ func TestFetchAsset(t *testing.T) {
 	content := string(b)
 	if !strings.HasPrefix(content, "c33b26de3c5f2b24a5d423cbdc631405f591776596052e5cf5fd9669f3e5e5cf  decred-darwin-amd64-v1.6.0-rc3.tar.gz") {
 		t.Fatalf("Wrong file contents")
+	}
+}
+
+// go test -v -tags live -run DownloadChromium
+func TestDownloadChromium(t *testing.T) {
+	tmpDir, _ := ioutil.TempDir("", "")
+	defer os.RemoveAll(tmpDir)
+	versionDir := filepath.Join(tmpDir, "version")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	err := downloadChromium(ctx, tmpDir, versionDir)
+	if err != nil {
+		t.Fatalf("downloadChromium error: %v", err)
 	}
 }

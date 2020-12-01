@@ -72,6 +72,7 @@ type GUI struct {
 	stateMtx     sync.RWMutex
 	ecoSt        *eco.EcoState
 	decreditonSt *eco.ServiceStatus
+	dexSt        *eco.ServiceStatus
 
 	// Eco initialization page
 	start    *gi.Frame
@@ -84,12 +85,14 @@ type GUI struct {
 
 	// Home page
 	home     *gi.Frame
+	appRow   *gi.Frame
 	homeSync *gi.Label
 	apps     struct {
 		decrediton *gi.Frame
 		dex        *gi.Frame
 	}
 	setDecreditonImg func(bool)
+	setDEXImg        func(bool)
 }
 
 // NewGUI creates a new *GUI. Call Run to open the window.
@@ -126,7 +129,7 @@ func NewGUI() *GUI {
 		views:       views,
 	}
 	gui.ecoSt = new(eco.EcoState)
-	gui.decreditonSt = new(eco.ServiceStatus)
+	gui.decreditonSt = nil
 
 	gui.initializeStartBox()
 	gui.initializeInitBox()
@@ -174,9 +177,19 @@ func (gui *GUI) Run(ctx context.Context) {
 			gui.sendSetFrameSignal(gui.start)
 			return
 		}
+		for svc, svcStatus := range state.Services {
+			switch svc {
+			case "decrediton":
+				gui.storeDecreditonStatus(svcStatus)
+			case "dexc":
+				gui.storeDEXStatus(svcStatus)
+			}
+		}
 		if state.Eco.WalletExists {
 			gui.removePW()
 		}
+
+		gui.updateApps()
 
 		if state.Eco.SyncMode == eco.SyncModeUninitialized {
 			gui.sendSetFrameSignal(gui.start)
@@ -203,12 +216,25 @@ func (gui *GUI) Run(ctx context.Context) {
 			}
 		},
 		ServiceStatus: func(newState *eco.ServiceStatus) {
+			// If this is a new service, we'll need to schedule a app row
+			// update.
+			var needsAppRowUpdate bool
 			switch newState.Service {
 			case "decrediton":
+				needsAppRowUpdate = gui.decreditonStatus() == nil
 				oldState := gui.storeDecreditonStatus(newState)
 				if oldState.On != newState.On {
 					gui.sendServiceStatusSignal(newState)
 				}
+			case "dexc":
+				needsAppRowUpdate = gui.dexcStatus() == nil
+				oldState := gui.storeDEXStatus(newState)
+				if oldState.On != newState.On {
+					gui.sendServiceStatusSignal(newState)
+				}
+			}
+			if needsAppRowUpdate {
+				gui.scheduleAppRowUpdate()
 			}
 		},
 	})
@@ -235,7 +261,11 @@ func (gui *GUI) initializeSignals() {
 			switch u.Service {
 			case "decrediton":
 				gui.setDecreditonImg(u.On)
+			case "dexc":
+				gui.setDEXImg(u.On)
 			}
+		case eventAppsUpdated:
+			gui.updateApps()
 		case eventDCRDSyncStatus:
 			u := evt.data.(*eco.Progress)
 			gui.processDCRDSyncUpdate(u)
@@ -249,6 +279,10 @@ func (gui *GUI) sendSetFrameSignal(frame *gi.Frame) {
 
 func (gui *GUI) sendServiceStatusSignal(u *eco.ServiceStatus) {
 	gui.signal(eventServiceStatus, u)
+}
+
+func (gui *GUI) scheduleAppRowUpdate() {
+	gui.signal(eventAppsUpdated, nil)
 }
 
 func (gui *GUI) signal(evt int, thing interface{}) {
@@ -376,6 +410,20 @@ func (gui *GUI) storeDecreditonStatus(newState *eco.ServiceStatus) (oldState *ec
 	return oldState
 }
 
+func (gui *GUI) dexcStatus() *eco.ServiceStatus {
+	gui.stateMtx.RLock()
+	defer gui.stateMtx.RUnlock()
+	return gui.dexSt
+}
+
+func (gui *GUI) storeDEXStatus(newState *eco.ServiceStatus) (oldState *eco.ServiceStatus) {
+	gui.stateMtx.Lock()
+	defer gui.stateMtx.Unlock()
+	oldState = gui.dexSt
+	gui.dexSt = newState
+	return oldState
+}
+
 // initEco should be run in a goroutine.
 func (gui *GUI) initEco(pw string, syncMode eco.SyncMode) {
 	ch, err := eco.Init(gui.ctx, pw, syncMode)
@@ -436,12 +484,13 @@ func (gui *GUI) initializeHomeBox() {
 	gui.homeSync = addNewLabel(homeBox, "homeSync", "syncing...", 14)
 	restyle(gui.homeSync, "horizontal-align: center;")
 
-	row := gi.AddNewFrame(homeBox, "homeRow", gi.LayoutHoriz)
-	restyle(row, "spacing: 50;")
+	appRow := gi.AddNewFrame(homeBox, "homeRow", gi.LayoutHoriz)
+	gui.appRow = appRow
+	restyle(appRow, "spacing: 50;")
 
-	gi.AddNewStretch(row, "row.stretch.1")
+	gi.AddNewStretch(appRow, "appRow.stretch.1")
 
-	decreditonWgt := gi.AddNewFrame(row, "decrediton", gi.LayoutVert)
+	decreditonWgt := gi.AddNewFrame(appRow, "decrediton", gi.LayoutVert)
 	gui.apps.decrediton = decreditonWgt
 	restyle(decreditonWgt)
 	decreditonOnImg, imgW, imgH, err := loadImage(decreditonBGOnPath, 350, 0)
@@ -457,11 +506,15 @@ func (gui *GUI) initializeHomeBox() {
 	// This is a magic line that must be done to accept mouse events.
 	decreditonWgt.Layout.Viewport = gui.winViewport
 	bindClick(decreditonWgt, func() {
-		if gui.decreditonStatus().On {
+		st := gui.decreditonStatus()
+		if st == nil {
+			log.Errorf("Cannot start decrediton. Service not available.")
+			return
+		}
+		if st.On {
 			// Nothing to do
 			return
 		}
-		fmt.Println("--StartDecrediton")
 		eco.StartDecrediton(gui.ctx)
 	})
 
@@ -475,7 +528,7 @@ func (gui *GUI) initializeHomeBox() {
 		})
 	}
 
-	dexcWgt := gi.AddNewFrame(row, "dexc", gi.LayoutVert)
+	dexcWgt := gi.AddNewFrame(appRow, "dexc", gi.LayoutVert)
 	gui.apps.dex = dexcWgt
 	restyle(dexcWgt)
 
@@ -501,7 +554,31 @@ func (gui *GUI) initializeHomeBox() {
 		}
 	})
 
-	gi.AddNewStretch(row, "row.stretch.2")
+	gui.setDEXImg = func(on bool) {
+		runWithUpdate(dexcWgt, func() {
+			if on {
+				dexBitmap.SetImage(dexOnImg, float32(imgW), float32(imgH))
+			} else {
+				dexBitmap.SetImage(dexOffImg, float32(imgW), float32(imgH))
+			}
+		})
+	}
+
+	gi.AddNewStretch(appRow, "row.stretch.2")
+}
+
+func (gui *GUI) updateApps() {
+	runWithUpdate(gui.appRow, func() {
+		gui.appRow.DeleteChildren(false)
+		if gui.decreditonStatus() != nil {
+			gui.appRow.AddChild(gui.apps.decrediton)
+		}
+
+		if gui.dexcStatus() != nil {
+			gui.appRow.AddChild(gui.apps.dex)
+		}
+	})
+
 }
 
 func (gui *GUI) processDCRDSyncUpdate(u *eco.Progress) {

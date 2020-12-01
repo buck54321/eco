@@ -4,28 +4,39 @@ package eco
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
 var (
-	decredPattern        = regexp.MustCompile(`^decred-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.tar\.gz$`)
-	decreditonPattern    = regexp.MustCompile(`^decrediton-v(.*)\.tar\.gz$`)
-	dexcPattern          = regexp.MustCompile(`^dexc-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.tar\.gz$`)
-	programDirectory     = "/opt/decred-eco"
-	dcrdExeName          = dcrd
-	dcrWalletExeName     = dcrwallet
-	decreditonExeName    = decrediton
-	decreditonConfigPath = filepath.Join(osUser.HomeDir, ".config", "decrediton")
+	serverAddress             = &NetAddr{"unix", filepath.Join(AppDir, UnixSocketFilename)}
+	decredPattern             = regexp.MustCompile(`^decred-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.tar\.gz$`)
+	decreditonPattern         = regexp.MustCompile(`^decrediton-v(.*)\.tar\.gz$`)
+	dexcPattern               = regexp.MustCompile(`^dexc-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.tar\.gz$`)
+	programDirectory          = "/opt/decred-eco"
+	dcrdExeName               = dcrd
+	dcrWalletExeName          = dcrwallet
+	decreditonExeName         = decrediton
+	decreditonConfigPath      = filepath.Join(osUser.HomeDir, ".config", "decrediton")
+	selfInstalledChromiumPath = filepath.Join(AppDir, "chromium", "chromium-browser")
+	dexcExeName               = dexc
+
+	chromiumLinux64Download = "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64%2F831895%2Fchrome-linux.zip?generation=1606761066330041&alt=media"
+	chromiumLinux64Hash     = [32]byte{
+		0x38, 0x08, 0xd6, 0x80, 0xd4, 0x87, 0x72, 0xc5,
+		0xdb, 0x1f, 0x15, 0x7c, 0xba, 0x1a, 0x6c, 0xc6,
+		0xd6, 0x8e, 0x44, 0x64, 0xf4, 0x29, 0x22, 0x13,
+		0x94, 0xa7, 0x1a, 0x98, 0xea, 0xf5, 0x37, 0xe8,
+	}
 )
 
 func unpack(archivePath string) (string, error) {
@@ -175,25 +186,15 @@ func fetchAndUnpack(ctx context.Context, tmpDir string, asset *releaseAsset, has
 	}
 
 	// Fetch the main asset.
-	archivePath, err := fetchAsset(ctx, tmpDir, asset)
+	archivePath, err := fetchAsset(ctx, tmpDir, asset.URL, asset.Name)
 	if err != nil {
 		return fmt.Errorf("Error fetching %q: %w", asset.Name, err)
 	}
 
 	// Check the hash.
-	f, err := os.Open(archivePath)
+	err = checkFileHash(archivePath, checkHash)
 	if err != nil {
-		return fmt.Errorf("Error opening archive %q for hashing: %w", asset.Name, err)
-	}
-	hasher := sha256.New()
-	_, err = io.Copy(hasher, f)
-	f.Close()
-	if err != nil {
-		return fmt.Errorf("Error hashing archive %q: %w", asset.Name, err)
-	}
-	h := hasher.Sum(nil)
-	if !bytes.Equal(h, checkHash) {
-		return fmt.Errorf("File hash mismatch for %q. Expected %x, got %x", asset.Name, checkHash, h)
+		return fmt.Errorf("Failed file hash check: %w", err)
 	}
 
 	// Unpack.
@@ -202,4 +203,94 @@ func fetchAndUnpack(ctx context.Context, tmpDir string, asset *releaseAsset, has
 		return fmt.Errorf("Error unpacking %q: %w", asset.Name, err)
 	}
 	return nil
+}
+
+var (
+	chromiumDir     = filepath.Join(AppDir, "chromium")
+	chromiumDataDir = filepath.Join(chromiumDir, "appdata")
+	chromiumFlags   = []string{
+		"--user-data-dir=" + chromiumDataDir,
+		"--disable-extensions",
+		"--no-first-run",
+		"--app=http://localhost" + dexWebAddr,
+	}
+	linuxCmds = [4]string{"chromium-browser", "brave-browser", "google-chrome"}
+)
+
+// chromium attempts to find a suitable Chromium-based browser. The
+// browser executable is assumed to be in PATH, and one of linuxCmds.
+func chromium(ctx context.Context) (path string, args []string, found bool, err error) {
+	err = os.MkdirAll(chromiumDataDir, 0700)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("MkDirAll error for directory %s", chromiumDataDir)
+	}
+	for _, cmd := range linuxCmds {
+		major, _, _, found := getBrowserVersion(ctx, cmd)
+		if found && major >= minChromiumMajorVersion {
+			return cmd, chromiumFlags, true, nil
+		}
+	}
+	// Check if we have installed it ourselves.
+	if fileExists(selfInstalledChromiumPath) {
+		return selfInstalledChromiumPath, chromiumFlags, true, nil
+	}
+	// Edge is chromium-based now, so if we can figure out how to check the
+	// version and start it with the requisite flags, that should definitely be
+	// added here.
+	return "", nil, false, nil
+}
+
+func chromiumDownloadPath() (string, [32]byte) {
+	if runtime.GOARCH == "amd64" {
+		return chromiumLinux64Download, chromiumLinux64Hash
+	}
+	return "", [32]byte{}
+}
+
+func downloadChromium(ctx context.Context, tmpDir, versionDir string) error {
+	downloadPath, checkHash := chromiumDownloadPath()
+	if downloadPath == "" {
+		return fmt.Errorf("no download path for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+
+	outPath, err := fetchAsset(ctx, tmpDir, downloadPath, "chromium.zip")
+	if err != nil {
+		return err
+	}
+
+	err = checkFileHash(outPath, checkHash[:])
+	if err != nil {
+		return err
+	}
+
+	unpacked, err := unzip(outPath)
+	if err != nil {
+		return fmt.Errorf("unzip error: %v", err)
+	}
+
+	return moveDirectoryContents(unpacked, filepath.Join(versionDir, "chromium"))
+}
+
+// Get browser version attempts to get the currently installed version for the
+// specified browser executable. The boolean return value, found, indicates if
+// a browser with an acceptable version is located.
+func getBrowserVersion(ctx context.Context, cmd string) (major, minor, patch int, found bool) {
+	cmdOut, err := exec.CommandContext(ctx, cmd, "--version").Output()
+	if err == nil {
+		log.Tracef("%s has version %s\n", cmd, string(cmdOut))
+		return parseVersion(string(cmdOut))
+	}
+	return
+}
+
+func parseVersion(ver string) (major, minor, patch int, found bool) {
+	matches := chromiumVersionRegexp.FindStringSubmatch(ver)
+	if len(matches) == 4 {
+		// The regex grouped on \d+, so an error is impossible(?).
+		major, _ = strconv.Atoi(matches[1])
+		minor, _ = strconv.Atoi(matches[2])
+		patch, _ = strconv.Atoi(matches[3])
+		found = true
+	}
+	return
 }

@@ -30,5 +30,5 @@ func main() {
 		defer fmt.Print("\r") // Delete the little '^C' printed in some (all?) linux terminals
 		cancel()
 	}()
-	eco.Run(ctx, &eco.Config{})
+	eco.Run(ctx)
 }

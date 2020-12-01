@@ -2,6 +2,7 @@ package eco
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -16,7 +18,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,7 +42,9 @@ const (
 	crypterKey    = "crypter"
 	walletSeedKey = "walletSeed"
 	extraInputKey = "extraInput"
+	dexInputKey   = "dexInput"
 	ecoStateKey   = "ecoState"
+	dexInitedKey  = "dexInited"
 )
 
 var (
@@ -49,15 +52,10 @@ var (
 	CertPath = filepath.Join(AppDir, "decred-eco.cert")
 
 	dcrdRunning, dcrdSyncedOnce, dcrWalletRunning,
-	decreditonRunning uint32
+	decreditonRunning, dcrwalletRunningOnce, dexRunning uint32
 
 	osUser, _ = user.Current()
 )
-
-type Config struct {
-	ServerAddress *NetAddr // [network, address]
-	ExeExt        string   // with leading full stop
-}
 
 type NetAddr struct {
 	Net  string
@@ -65,11 +63,11 @@ type NetAddr struct {
 }
 
 type Eco struct {
-	cfg        *Config
-	db         *db.DB
-	innerCtx   context.Context
-	outerCtx   context.Context
-	dcrdSynced chan struct{}
+	db             *db.DB
+	innerCtx       context.Context
+	outerCtx       context.Context
+	dcrdSynced     chan struct{}
+	dcrwalletReady chan struct{}
 
 	syncMtx   sync.Mutex
 	syncCache map[string]*FeedMessage
@@ -82,7 +80,7 @@ type Eco struct {
 	dcrwallet  *DCRWallet
 }
 
-func Run(outerCtx context.Context, cfg *Config) {
+func Run(outerCtx context.Context) {
 	// Create the app directory
 	err := os.MkdirAll(AppDir, 0755)
 	if err != nil {
@@ -141,30 +139,19 @@ func Run(outerCtx context.Context, cfg *Config) {
 	// a password.
 	state.WalletExists = walletFileExists()
 
-	// Parse the server address
-	if cfg.ServerAddress == nil {
-		switch runtime.GOOS {
-		case "linux":
-			cfg.ServerAddress = &NetAddr{"unix", filepath.Join(AppDir, UnixSocketFilename)}
-		default:
-			cfg.ServerAddress = &NetAddr{"tcp4", TCPSocketHost}
-		}
-	}
-
-	// Write the server address to file
-	listenerFilepath := filepath.Join(AppDir, ListenerFilename)
-	err = ioutil.WriteFile(listenerFilepath, []byte(fmt.Sprintf("%s %s", cfg.ServerAddress.Net, cfg.ServerAddress.Addr)), 0644)
-	if err != nil {
-		log.Errorf("Error writing listener file: %w", err)
-		return
-	}
-
 	// We need an inner Context that is delayed on cancellation to allow clean
 	// shutdown of e.g. dcrd
 	innerCtx, cancel := context.WithCancel(context.Background())
 
+	services := make(map[string]*ServiceStatus, 2)
+	services[decrediton] = &ServiceStatus{Service: decrediton}
+
+	dexNeedsInit, _ := dbb.FetchDecode(dexInputKey, new(pwCache))
+	if !dexNeedsInit {
+		services[dexc] = &ServiceStatus{Service: dexc}
+	}
+
 	eco := &Eco{
-		cfg:      cfg,
 		db:       dbb,
 		innerCtx: innerCtx,
 		outerCtx: outerCtx,
@@ -172,12 +159,13 @@ func Run(outerCtx context.Context, cfg *Config) {
 			Eco:      *state,
 			Services: make(map[string]*ServiceStatus),
 		},
-		versionDir: filepath.Join(programDirectory, state.Version),
-		dcrd:       &DCRD{DCRDState: *dcrdState},
-		dcrwallet:  &DCRWallet{DCRWalletState: *dcrWalletState},
-		syncChans:  make(map[chan *FeedMessage]struct{}),
-		dcrdSynced: make(chan struct{}),
-		syncCache:  make(map[string]*FeedMessage),
+		versionDir:     filepath.Join(programDirectory, state.Version),
+		dcrd:           &DCRD{DCRDState: *dcrdState},
+		dcrwallet:      &DCRWallet{DCRWalletState: *dcrWalletState},
+		syncChans:      make(map[chan *FeedMessage]struct{}),
+		dcrdSynced:     make(chan struct{}),
+		dcrwalletReady: make(chan struct{}),
+		syncCache:      make(map[string]*FeedMessage),
 	}
 
 	go func() {
@@ -198,8 +186,15 @@ func Run(outerCtx context.Context, cfg *Config) {
 		log.Errorf("dcrwallet startup error: %w", err)
 	}
 
+	if dexNeedsInit {
+		err := eco.runDEX()
+		if err != nil {
+			log.Errorf("DEX initialization error: %v", err)
+		}
+	}
+
 	for {
-		srv, err := NewServer(eco.cfg.ServerAddress, eco)
+		srv, err := NewServer(eco)
 		if err == nil {
 			srv.Run(outerCtx)
 		} else {
@@ -389,6 +384,20 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 		return
 	}
 
+	versionDir := filepath.Join(programDirectory, release.Name)
+
+	// Need to cache the password until we can initialize DEX.
+	pwc, err := newPWCache(req.PW)
+	if err != nil {
+		fail("Encryption error", err)
+		return
+	}
+	err = eco.db.EncodeStore(dexInputKey, pwc)
+	if err != nil {
+		fail("Error storing dex input", err)
+		return
+	}
+
 	if !walletFileExists() {
 		createWallet := func() bool {
 			// Write the user's password to a file.
@@ -415,7 +424,7 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 				return false
 			}
 
-			exe := filepath.Join(programDirectory, release.Name, decred, dcrWalletExeName)
+			exe := filepath.Join(versionDir, decred, dcrWalletExeName)
 			cmd := exec.CommandContext(eco.outerCtx, exe, []string{
 				fmt.Sprintf("--appdata=\"%s\"", dcrwalletAppDir),
 				"--create",
@@ -435,7 +444,7 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 
 			op, err := cmd.Output()
 			if err != nil {
-				log.Infof("Error creating wallet: err = %v, output = %s", err, string(op))
+				log.Errorf("Error creating wallet: err = %v, output = %s", err, string(op))
 				fail("Error creating wallet", err)
 				return false
 			}
@@ -447,7 +456,16 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 			// complete, and we wouldn't have it during the next startup.
 			// So, we'll store the password in the database until the wallet
 			// is started and a sync has begun.
-			eco.db.Store(extraInputKey, req.PW)
+			pwc, err := newPWCache(req.PW)
+			if err != nil {
+				fail("Encryption error", err)
+				return false
+			}
+			err = eco.db.EncodeStore(extraInputKey, pwc)
+			if err != nil {
+				fail("Error storing extra input", err)
+				return false
+			}
 
 			return true
 		}
@@ -482,7 +500,7 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 	log.Infof("Retrieving %d manifest files", len(assets.manifests))
 	for _, m := range assets.manifests {
 		log.Infof("Downloading %s", m.Name)
-		m.path, err = fetchAsset(eco.outerCtx, tmpDir, m)
+		m.path, err = fetchAsset(eco.outerCtx, tmpDir, m.URL, m.Name)
 		if err != nil {
 			fail("Failed to fetch manifest", err)
 			return
@@ -530,6 +548,23 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 	if err != nil {
 		fail("Error moving assets", err)
 		return
+	}
+
+	// Make sure we have a chromium browser for DEX. If we don't, but we know
+	// where to get one, download it. If we don't know where to get one, we'll
+	// have to deal with it at the UI level. E.g. a message saying "Open DEX in
+	// your browser at ..."
+	_, _, found, err := chromium(eco.outerCtx)
+	if err != nil {
+		fail("Error searching for Chromium", err)
+		return
+	}
+	if !found {
+		// If we have a file to download, do it.
+		err := downloadChromium(eco.outerCtx, tmpDir, versionDir)
+		if err != nil {
+			log.Errorf("Error downloading Chromium: %v", err)
+		}
 	}
 
 	// // Update complete, store password and new eco state.
@@ -767,6 +802,12 @@ func (eco *Eco) signalDCRDSynced() {
 	}
 }
 
+func (eco *Eco) signalDCRWalletRunning() {
+	if atomic.CompareAndSwapUint32(&dcrwalletRunningOnce, 0, 1) {
+		close(eco.dcrwalletReady)
+	}
+}
+
 func (eco *Eco) runDCRWallet() error {
 	eco.stateMtx.Lock()
 	defer eco.stateMtx.Unlock()
@@ -800,63 +841,79 @@ func (eco *Eco) runDCRWallet() error {
 		args = append(args, "--spv")
 	}
 
-	exeRunning := make(chan struct{})
-	var svcExe *serviceExe
-
 	// A goroutine to actually run the wallet.
 	clearInput := false
 	go func() {
+		defer atomic.StoreUint32(&dcrWalletRunning, 0)
 		defer eco.sendServiceStatus(&ServiceStatus{
 			Service: dcrwallet,
 			On:      false,
 		})
 		if !spvMode {
-			defer atomic.StoreUint32(&dcrWalletRunning, 0)
 			select {
 			case <-eco.dcrdSynced:
 			case <-eco.outerCtx.Done():
 				return
 			}
 		}
-		extraInput, err := eco.db.Fetch(extraInputKey)
-		if err != nil {
-			log.Errorf("DB error fetching extra input: %v", err)
-			return
-		}
-		// We might not have a version until initialized, so we can't create the
-		// command before here.
-		exe := filepath.Join(programDirectory, eco.state.Eco.Version, decred, dcrWalletExeName)
-		svcExe = newExe(eco.innerCtx, exe, args...)
-		eco.dcrwallet.exe = svcExe
 
-		if len(extraInput) > 0 {
-			clearInput = true
-			args := append(extraInput, byte('\n'))
-			stdin, err := svcExe.cmd.StdinPipe()
+		for {
+			extraInput := new(pwCache)
+			hasExtraInput, err := eco.db.FetchDecode(extraInputKey, extraInput)
 			if err != nil {
-				log.Errorf("Error getting stdin for dcrwallet command: %v", err)
+				log.Errorf("DB error fetching extra input: %v", err)
 				return
-			} else {
-				go func() {
-					_, err := stdin.Write(args)
-					if err != nil {
-						log.Errorf("Error writing to dcrwallet stdin: %v", err)
-					}
-				}()
+			}
+
+			// We might not have a version until initialized, so we can't create the
+			// command before here.
+			exe := filepath.Join(programDirectory, eco.state.Eco.Version, decred, dcrWalletExeName)
+			svcExe := newExe(eco.innerCtx, exe, args...)
+			eco.dcrwallet.exe = svcExe
+
+			if hasExtraInput {
+				clearInput = true
+
+				pw, err := extraInput.PW()
+				if err != nil {
+					log.Errorf("Error deserializing crypter: %v", err)
+					return
+				}
+
+				// Or should I just io.Copy(svcExe.cmd.Stdin, args) ?
+				args := append(pw, byte('\n'))
+				stdin, err := svcExe.cmd.StdinPipe()
+				if err != nil {
+					log.Errorf("Error getting stdin for dcrwallet command: %v", err)
+					return
+				} else {
+					go func() {
+						_, err := stdin.Write(args)
+						if err != nil {
+							log.Errorf("Error writing to dcrwallet stdin: %v", err)
+						}
+					}()
+				}
+			}
+			svcExe.Run()
+			select {
+			case <-time.After(time.Second * 5):
+			case <-eco.outerCtx.Done():
+				return
 			}
 		}
-		close(exeRunning)
-		svcExe.Run()
 	}()
 
 	// A goroutine to establish a connection and set the client.
 	go func() {
 		var connectAttempts int
 
-		select {
-		case <-exeRunning:
-		case <-eco.outerCtx.Done():
-			return
+		if !spvMode {
+			select {
+			case <-eco.dcrdSynced:
+			case <-eco.outerCtx.Done():
+				return
+			}
 		}
 
 		// First, keep trying to get a client until successful. On initial
@@ -876,7 +933,7 @@ func (eco *Eco) runDCRWallet() error {
 			}
 			select {
 			case <-time.After(time.Second * 5):
-			case <-svcExe.ctx.Done():
+			case <-eco.outerCtx.Done():
 				return
 			}
 		}
@@ -889,6 +946,8 @@ func (eco *Eco) runDCRWallet() error {
 			eco.dcrwallet.client = nil
 			eco.stateMtx.Unlock()
 		}()
+
+		eco.signalDCRWalletRunning()
 
 		tryGetInfo := func() *wallettypes.InfoWalletResult {
 			var err error
@@ -905,10 +964,13 @@ func (eco *Eco) runDCRWallet() error {
 
 		var walletInfo *wallettypes.InfoWalletResult
 		for {
-			if svcExe.ctx.Err() != nil {
+			if eco.outerCtx.Err() != nil {
 				return
 			}
-			if walletInfo = tryGetInfo(); walletInfo == nil {
+			// dcrwallet will keep requesting the password for initial sync
+			// until they have retrieved at least one block. Don't continue
+			// until dcrwallet confirms they have it.
+			if walletInfo = tryGetInfo(); walletInfo == nil || walletInfo.Blocks == 0 {
 				select {
 				case <-time.After(time.Second):
 					continue
@@ -943,7 +1005,7 @@ func (eco *Eco) runDCRWallet() error {
 
 				delay = time.Second * 30
 
-			case <-svcExe.ctx.Done():
+			case <-eco.outerCtx.Done():
 				timer.Stop()
 				return
 			}
@@ -975,12 +1037,12 @@ func (eco *Eco) runDecrediton() error {
 		}
 	}
 
-	eco.stateMtx.Lock()
-	defer eco.stateMtx.Unlock()
-
 	if !atomic.CompareAndSwapUint32(&decreditonRunning, 0, 1) {
 		return fmt.Errorf("Decrediton already running")
 	}
+
+	eco.stateMtx.Lock()
+	defer eco.stateMtx.Unlock()
 
 	eco.sendServiceStatus(&ServiceStatus{
 		Service: decrediton,
@@ -1003,7 +1065,6 @@ func (eco *Eco) runDecrediton() error {
 	exe := filepath.Join(programDirectory, eco.state.Eco.Version, decrediton, decreditonExeName)
 
 	svcExe := newExe(eco.innerCtx, exe, args...)
-	eco.dcrd.exe = svcExe
 
 	go func() {
 		defer atomic.StoreUint32(&decreditonRunning, 0)
@@ -1012,61 +1073,234 @@ func (eco *Eco) runDecrediton() error {
 			On:      false,
 		})
 
-		fmt.Println("--Running Derediton")
-
 		svcExe.Run()
 	}()
 
 	return nil
 }
 
-// func (eco *Eco) initializeDCRWallet(pw []byte) error {
-// 	// There are two cases to consider.
-// 	// 1. The wallet app data already exists, in which case we need to check
-// 	//    the wallet password **after** dcrd is synced.
-// 	// 2. The wallet app data doesn't exist yet. Create the wallet. Save the
-// 	//    encrypted wallet seed until the user authorizes deletion.
-// 	walletDBPath := filepath.Join(dcrwalletAppDir, "mainnet", "wallet.db")
-// 	if fileExists(walletDBPath) {
+func (eco *Eco) runDEX() error {
 
-// 	}
-// }
+	select {
+	case <-eco.dcrwalletReady:
+	case <-eco.outerCtx.Done():
+		return nil
+	}
+
+	eco.stateMtx.Lock()
+	defer eco.stateMtx.Unlock()
+
+	rpcUser, rpcPass := eco.dcrd.RPCUser, eco.dcrd.RPCPass
+
+	dexInput := new(pwCache)
+	initializing, err := eco.db.FetchDecode(dexInputKey, dexInput)
+	if err != nil {
+		return fmt.Errorf("Error loading dex input: %v", err)
+	}
+
+	// Allow initialization in SPV so that we can delete the cached credentials
+	// from the DB.
+	if !initializing && eco.state.Eco.SyncMode == SyncModeSPV {
+		log.Infof("Not running DEX in SPV mode")
+		return nil
+	}
+
+	if !atomic.CompareAndSwapUint32(&dexRunning, 0, 1) {
+		return fmt.Errorf("DEX already running")
+	}
+
+	// Only set status to on if we're not initializing. The presence of a
+	// ServiceStatus in the cache is what indicates whether a service is
+	// installed, and until initialized, the service is not installed.
+	if !initializing {
+		eco.sendServiceStatus(&ServiceStatus{
+			Service: dexc,
+			On:      true,
+		})
+	}
+
+	args := []string{
+		fmt.Sprintf("--appdata=\"%s\"", dexAppDir),
+		fmt.Sprintf("--webaddr=%s", "localhost"+dexWebAddr),
+	}
+
+	exe := filepath.Join(programDirectory, eco.state.Eco.Version, dexc, dexcExeName)
+
+	svcExe := newExe(eco.innerCtx, exe, args...)
+
+	go func() {
+		defer atomic.StoreUint32(&dexRunning, 0)
+		defer eco.sendServiceStatus(&ServiceStatus{
+			Service: dexc,
+			On:      false,
+		})
+
+		svcExe.Run()
+	}()
+
+	initialize := func() error {
+		// First, try to create a new wallet account.
+		cl, err := eco.dcrWalletClient()
+		if err != nil {
+			return fmt.Errorf("Error getting dcrwallet client: %w", err)
+		}
+		pwb, err := dexInput.PW()
+		if err != nil {
+			return fmt.Errorf("Error getting credentials from cache: %w", err)
+		}
+		pw := encode.PassBytes(pwb)
+		defer pw.Clear()
+		accts, err := cl.ListAccounts(eco.outerCtx)
+		if err != nil {
+			return fmt.Errorf("Error listing accounts: %w", err)
+		}
+		// If no DEX account is found, create the account.
+		if _, found := accts[dexAcctName]; !found {
+			err = cl.WalletPassphrase(eco.outerCtx, string(pw), int64(time.Duration(math.MaxInt64)/time.Second))
+			if err != nil {
+				return fmt.Errorf("Error unlocking wallet: %w", err)
+			}
+			err = cl.CreateNewAccount(eco.outerCtx, dexAcctName)
+			if err != nil {
+				return fmt.Errorf("Error creating new account: %w", err)
+			}
+		}
+
+		// Get the core.User.
+		user := &struct {
+			Initialized bool `json:"inited"`
+			Assets      map[uint32]struct {
+				Symbol string    `json:"symbol"`
+				Wallet *struct{} `json:"wallet"`
+			} `json:"assets"`
+		}{}
+		resp, err := http.Get("http://localhost" + dexWebAddr + "/api/user")
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		err = json.NewDecoder(resp.Body).Decode(user)
+		if err != nil {
+			return fmt.Errorf("JSON decode error: %w", err)
+		}
+
+		if !user.Initialized {
+			b, err := json.Marshal(&struct {
+				Pass encode.PassBytes `json:"pass"`
+			}{
+				Pass: pw,
+			})
+			if err != nil {
+				return fmt.Errorf("JSON encode error: %v", err)
+			}
+			_, err = http.Post("http://localhost"+dexWebAddr+"/api/init", "application/json", bytes.NewReader(b))
+			if err != nil {
+				return fmt.Errorf("DEX client initialization error: %v", err)
+			}
+		}
+		if user.Assets[42].Wallet == nil {
+			newWalletForm := &struct {
+				AssetID uint32            `json:"assetID"`
+				Config  map[string]string `json:"config"`
+				Pass    encode.PassBytes  `json:"pass"`
+				AppPW   encode.PassBytes  `json:"appPass"`
+			}{
+				AssetID: 42,
+				Config: map[string]string{
+					"account":   dexAcctName,
+					"username":  rpcUser,
+					"password":  rpcPass,
+					"rpclisten": dcrWalletRPCListen,
+					"rpccert":   dcrWalletRPCCert,
+				},
+				Pass:  pw,
+				AppPW: pw,
+			}
+			b, err := json.Marshal(newWalletForm)
+			if err != nil {
+				return fmt.Errorf("Error marshaling new wallet form: %w", err)
+			}
+			_, err = http.Post("http://localhost"+dexWebAddr+"/api/newwallet", "application/json", bytes.NewReader(b))
+			if err != nil && !strings.Contains(err.Error(), "already initialized") {
+				return fmt.Errorf("DEX api/newwallet request error: %v", err)
+			}
+		}
+		return nil
+	}
+
+	// If we need to initialize, run a second goroutine to attempt initial
+	// setup.
+	if initializing {
+		go func() {
+			for {
+				err := initialize()
+				if err == nil {
+					eco.db.Store(dexInputKey, nil)
+					// Need to kill dexc and send a ServiceStatus now. Set
+					// initializing to false so that the ServiceStatus will be
+					// sent above. This is just a mechanizm to prevent the
+					// status from being set before initialization is actually
+					// complete, since the presence of the status, whether on or
+					// off, is indication that the service is installed and
+					// ready to use.
+					initializing = false
+					// Kill dexc. The service has not even been available until
+					// the serviceExe.Run goroutine exits, so the user does
+					// not expect it to be running. They can now manually
+					// start dexc.
+					svcExe.cancel()
+					break
+				}
+				log.Error(err)
+				select {
+				case <-time.After(time.Second * 5):
+				case <-eco.outerCtx.Done():
+					return
+				}
+			}
+
+		}()
+	}
+
+	return nil
+
+}
 
 // saveEcoState should be called with the stateMtx >= RLocked.
 func (eco *Eco) saveEcoState() error {
 	return eco.db.EncodeStore(ecoStateKey, &eco.state.Eco)
 }
 
-func fetchAsset(ctx context.Context, dir string, asset *releaseAsset) (string, error) {
-	targetDir := filepath.Join(dir, asset.Name)
-	archive, err := os.OpenFile(targetDir, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+func fetchAsset(ctx context.Context, dir string, url, name string) (string, error) {
+	tgt := filepath.Join(dir, name)
+	payload, err := os.OpenFile(tgt, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
 		return "", fmt.Errorf("Error creating file: %w", err)
 	}
-	defer archive.Close()
+	defer payload.Close()
 
 	// From github API docs...
 	// > To download the asset's binary content, set the "Accept" header of the
 	//   request to "application/octet-stream"
 	client := &http.Client{}
-	log.Infof("Fetching %q to %q", asset.URL, targetDir)
-	req, err := http.NewRequestWithContext(ctx, "GET", asset.URL, nil)
+	log.Infof("Fetching %q to %q", url, tgt)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", fmt.Errorf("Error preparing request: %w", err)
 	}
 	req.Header.Set("Accept", "application/octet-stream")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("Request error for %q %w", asset.URL, err)
+		return "", fmt.Errorf("Request error for %q %w", url, err)
 	}
 
 	defer resp.Body.Close()
 
-	_, err = io.Copy(archive, resp.Body)
+	_, err = io.Copy(payload, resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("Error saving archive to file: %v", err)
 	}
-	return archive.Name(), nil
+	return payload.Name(), nil
 }
 
 func parseAssets(release *githubRelease) (*releaseAssets, error) {
@@ -1105,20 +1339,22 @@ func (eco *Eco) filepath(subpaths ...string) string {
 	return filepath.Join(append([]string{AppDir}, subpaths...)...)
 }
 
-func retrieveNetAddr() (*NetAddr, error) {
-	path := filepath.Join(AppDir, ListenerFilename)
-	b, err := ioutil.ReadFile(path)
+func checkFileHash(archivePath string, checkHash []byte) error {
+	f, err := os.Open(archivePath)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("Error opening archive %q for hashing: %w", archivePath, err)
 	}
-	parts := strings.Split(string(b), " ")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid address file format")
+	hasher := sha256.New()
+	_, err = io.Copy(hasher, f)
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("Error hashing archive %q: %w", archivePath, err)
 	}
-	return &NetAddr{
-		Net:  parts[0],
-		Addr: parts[1],
-	}, nil
+	h := hasher.Sum(nil)
+	if !bytes.Equal(h, checkHash) {
+		return fmt.Errorf("File hash mismatch for %q. Expected %x, got %x", archivePath, checkHash, h)
+	}
+	return nil
 }
 
 func State(ctx context.Context) (state *MetaState, err error) {
@@ -1265,6 +1501,10 @@ func StartDecrediton(ctx context.Context) {
 	request(ctx, routeStartDecrediton, struct{}{}, nil)
 }
 
+func StartDEX(ctx context.Context) {
+	request(ctx, routeStartDEX, struct{}{}, nil)
+}
+
 func walletFileExists() bool {
 	return fileExists(filepath.Join(dcrwalletAppDir, "mainnet", "wallet.db"))
 }
@@ -1283,7 +1523,7 @@ func genericFeed(ctx context.Context, route string, req interface{}, f func(bool
 		select {
 		case b, ok := <-bChan:
 			if !f(ok, b) {
-				return fmt.Errorf("--function failure")
+				return fmt.Errorf("function failure")
 			}
 		case <-ctx.Done():
 			return nil

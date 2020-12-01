@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	serverAddress     = &NetAddr{"tcp4", TCPSocketHost}
 	decredPattern     = regexp.MustCompile(`^decred-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.zip$`)
 	decreditonPattern = regexp.MustCompile(`^decrediton-v(.*)\.exe$`)
 	dexcPattern       = regexp.MustCompile(`^dexc-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.zip$`)

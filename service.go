@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"time"
 
 	walletclient "decred.org/dcrwallet/rpc/client/dcrwallet"
 	"github.com/decred/dcrd/rpcclient/v6"
@@ -21,6 +20,8 @@ const (
 	dcrwallet  = "dcrwallet"
 	dexc       = "dexc"
 	decrediton = "decrediton"
+
+	minChromiumMajorVersion = 76
 )
 
 var (
@@ -31,11 +32,17 @@ var (
 	dcrWalletRPCCert = filepath.Join(dcrwalletAppDir, "rpc.cert")
 	dcrWalletRPCKey  = filepath.Join(dcrwalletAppDir, "rpc.key")
 	decreditonAppDir = filepath.Join(AppDir, decrediton)
+	dexAppDir        = filepath.Join(AppDir, dexc)
 
 	dcrdRPCListen       = ":19703"
 	dcrdListen          = ":19704"
 	dcrWalletRPCListen  = ":19705"
 	dcrWalletGRPCListen = ":19706"
+	dexWebAddr          = ":26270"
+
+	chromiumVersionRegexp = regexp.MustCompile(`^[^\d]*(\d+)\.(\d+)\.(\d+)`)
+
+	dexAcctName = "dex"
 )
 
 type serviceExe struct {
@@ -75,18 +82,14 @@ func (s *serviceExe) processOutput(msg []byte) {
 // Run will run the service repeatedly until the service Context is canceled.
 func (s *serviceExe) Run() {
 	defer close(s.done)
-	for {
-		log.Infof("Running %q", s.cmd)
-		err := s.cmd.Run()
-		log.Tracef("%s finished: err = %v", s.name, err)
-		if s.ctx.Err() != nil {
-			return
-		}
-		if err != nil {
-			log.Errorf("Error encountered running %q: %v", s.cmd, err)
-		}
-		log.Infof("Restarting %q in 5 seconds", s.cmd)
-		time.Sleep(time.Second * 5)
+	log.Infof("Running %q", s.cmd)
+	err := s.cmd.Run()
+	log.Tracef("%s finished: err = %v", s.name, err)
+	if s.ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		log.Errorf("Error encountered running %q: %v", s.cmd, err)
 	}
 }
 

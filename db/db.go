@@ -102,11 +102,7 @@ func (db *DB) makeTopLevelBuckets(buckets [][]byte) error {
 // before internal use.
 func (db *DB) Store(k string, b []byte) error {
 	return db.Update(func(tx *bbolt.Tx) error {
-		bkt := tx.Bucket(mapBucket)
-		if bkt == nil {
-			return fmt.Errorf("map bucket not found")
-		}
-		return bkt.Put(hashKey([]byte(k)), b)
+		return tx.Bucket(mapBucket).Put(hashKey([]byte(k)), b)
 	})
 }
 
@@ -114,21 +110,24 @@ func (db *DB) Store(k string, b []byte) error {
 func (db *DB) Fetch(k string) ([]byte, error) {
 	var b []byte
 	return b, db.View(func(tx *bbolt.Tx) error {
-		bkt := tx.Bucket(mapBucket)
-		if bkt == nil {
-			return fmt.Errorf("map bucket not found")
-		}
-		b = encode.CopySlice(bkt.Get(hashKey([]byte(k))))
+		b = encode.CopySlice(tx.Bucket(mapBucket).Get(hashKey([]byte(k))))
 		return nil
 	})
 }
 
+// EncodeStore gob-encodes the thing and then stores it at k. If thing is nil,
+// any existing entry at k will be deleted.
 func (db *DB) EncodeStore(k string, thing interface{}) error {
-	b, err := encode.GobEncode(thing)
-	if err != nil {
-		return fmt.Errorf("Error encoding %q", k)
-	}
 	return db.Update(func(tx *bbolt.Tx) error {
+		if thing == nil { // Signal to delete entry.
+			// Ignore errors.
+			tx.DeleteBucket(hashKey([]byte(k)))
+			return nil
+		}
+		b, err := encode.GobEncode(thing)
+		if err != nil {
+			return fmt.Errorf("Error encoding %q", k)
+		}
 		return tx.Bucket(mapBucket).Put(hashKey([]byte(k)), b)
 	})
 }
@@ -136,11 +135,12 @@ func (db *DB) EncodeStore(k string, thing interface{}) error {
 func (db *DB) FetchDecode(k string, thing interface{}) (loaded bool, err error) {
 	return loaded, db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket(mapBucket).Get(hashKey([]byte(k)))
-		if b == nil {
+		if len(b) == 0 {
 			return nil
 		}
 		loaded = true
-		return encode.GobDecode(b, thing)
+		// I don't know if copying is necessary or not.
+		return encode.GobDecode(encode.CopySlice(b), thing)
 	})
 }
 

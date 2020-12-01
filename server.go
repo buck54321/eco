@@ -30,6 +30,7 @@ const (
 	routeInit            = "init"
 	routeSync            = "sync"
 	routeStartDecrediton = "start_decrediton"
+	routeStartDEX        = "start_dex"
 )
 
 type Server struct {
@@ -39,7 +40,7 @@ type Server struct {
 }
 
 // NewServer is a constructor for an Server.
-func NewServer(netAddr *NetAddr, eco *Eco) (*Server, error) {
+func NewServer(eco *Eco) (*Server, error) {
 	// Find or create the key pair.
 	keyExists := fileExists(KeyPath)
 	certExists := fileExists(CertPath)
@@ -66,15 +67,15 @@ func NewServer(netAddr *NetAddr, eco *Eco) (*Server, error) {
 	// TODO: Fire up a UDP server too so other machines on the network can find
 	// this Eco.
 
-	if netAddr.Net == "unix" {
-		if err := os.RemoveAll(netAddr.Addr); err != nil {
-			return nil, fmt.Errorf("error removing old unix socket at %s: %v", netAddr.Addr, err)
+	if serverAddress.Net == "unix" {
+		if err := os.RemoveAll(serverAddress.Addr); err != nil {
+			return nil, fmt.Errorf("error removing old unix socket at %s: %v", serverAddress.Addr, err)
 		}
 	}
 
-	listener, err := tls.Listen(netAddr.Net, netAddr.Addr, &tlsConfig)
+	listener, err := tls.Listen(serverAddress.Net, serverAddress.Addr, &tlsConfig)
 	if err != nil {
-		return nil, fmt.Errorf("Can't listen on %s %s: %w", netAddr.Net, netAddr.Addr, err)
+		return nil, fmt.Errorf("Can't listen on %s %s: %w", serverAddress.Net, serverAddress.Addr, err)
 	}
 
 	return &Server{
@@ -136,8 +137,6 @@ func (s *Server) handleRequest(conn net.Conn) {
 		return
 	}
 
-	fmt.Println("--route", route)
-
 	defer conn.Close()
 	switch route {
 	case routeServiceStatus:
@@ -148,6 +147,8 @@ func (s *Server) handleRequest(conn net.Conn) {
 		s.handleSyncRequest(conn)
 	case routeStartDecrediton:
 		s.handleStartDecrediton(conn)
+	case routeStartDEX:
+		s.handleStartDEX(conn)
 	default:
 		log.Errorf("unknown route: %s", route)
 	}
@@ -292,11 +293,24 @@ func (s *Server) handleStartDecrediton(conn net.Conn) {
 	}
 	b, err := encode.GobEncode(resp)
 	if err != nil {
-		log.Errorf("GobEncode(resp) error: %v", err)
+		log.Errorf("GobEncode(resp) error in handleStartDecrediton: %v", err)
 		return
 	}
 	writeConn(conn, b)
+}
 
+func (s *Server) handleStartDEX(conn net.Conn) {
+	err := s.eco.runDEX()
+	resp := &EcoError{}
+	if err != nil {
+		resp.Msg = err.Error()
+	}
+	b, err := encode.GobEncode(resp)
+	if err != nil {
+		log.Errorf("GobEncode(resp) error in handleStartDEX: %v", err)
+		return
+	}
+	writeConn(conn, b)
 }
 
 func writeConn(conn net.Conn, b []byte) error {
@@ -310,11 +324,6 @@ type Client struct {
 }
 
 func NewClient() (*Client, error) {
-	netAddr, err := retrieveNetAddr()
-	if err != nil {
-		return nil, fmt.Errorf("Error retreiving eco server address: %w", err)
-	}
-
 	pem, err := ioutil.ReadFile(CertPath)
 	if err != nil {
 		return nil, fmt.Errorf("ReadFile error: %v", err)
@@ -330,7 +339,7 @@ func NewClient() (*Client, error) {
 		ServerName: "localhost",
 	}
 	return &Client{
-		netAddr:   netAddr,
+		netAddr:   serverAddress,
 		tlsConfig: tlsConfig,
 	}, nil
 }

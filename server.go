@@ -31,6 +31,7 @@ const (
 	routeSync            = "sync"
 	routeStartDecrediton = "start_decrediton"
 	routeStartDEX        = "start_dex"
+	routeDCRCtl          = "dcrctl"
 )
 
 type Server struct {
@@ -149,6 +150,8 @@ func (s *Server) handleRequest(conn net.Conn) {
 		s.handleStartDecrediton(conn)
 	case routeStartDEX:
 		s.handleStartDEX(conn)
+	case routeDCRCtl:
+		s.handleDCRCtl(conn, payload)
 	default:
 		log.Errorf("unknown route: %s", route)
 	}
@@ -300,7 +303,7 @@ func (s *Server) handleStartDecrediton(conn net.Conn) {
 }
 
 func (s *Server) handleStartDEX(conn net.Conn) {
-	err := s.eco.runDEX()
+	err := s.eco.openDEXWindow()
 	resp := &EcoError{}
 	if err != nil {
 		resp.Msg = err.Error()
@@ -308,6 +311,27 @@ func (s *Server) handleStartDEX(conn net.Conn) {
 	b, err := encode.GobEncode(resp)
 	if err != nil {
 		log.Errorf("GobEncode(resp) error in handleStartDEX: %v", err)
+		return
+	}
+	writeConn(conn, b)
+}
+
+func (s *Server) handleDCRCtl(conn net.Conn, payload []byte) {
+	req := new(dcrCtlRequest)
+	err := encode.GobDecode(payload, req)
+	resp := &dcrCtlResponse{}
+	if err != nil {
+		resp = &dcrCtlResponse{Err: err.Error()}
+	} else {
+		resp, err = s.eco.dcrctl(req)
+		if err != nil {
+			resp = &dcrCtlResponse{Err: err.Error()}
+		}
+	}
+
+	b, err := encode.GobEncode(resp)
+	if err != nil {
+		log.Errorf("GobEncode(resp) error in handleDCRCtl: %v", err)
 		return
 	}
 	writeConn(conn, b)
@@ -416,7 +440,7 @@ func (c *Client) subscribe(ctx context.Context, route string, subscription inter
 			}
 			packet, err := nextPacket(conn)
 			if err != nil {
-				log.Errorf("Subscription feed error: %v", err)
+				log.Errorf("%s subscription error: %v", route, err)
 				return
 			}
 			select {

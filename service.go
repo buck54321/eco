@@ -20,6 +20,7 @@ const (
 	dcrwallet  = "dcrwallet"
 	dexc       = "dexc"
 	decrediton = "decrediton"
+	dcrctl     = "dcrctl"
 
 	minChromiumMajorVersion = 76
 )
@@ -51,6 +52,7 @@ type serviceExe struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+	feed   func([]byte)
 }
 
 func newExe(ctx context.Context, exe string, args ...string) *serviceExe {
@@ -73,24 +75,26 @@ func newExe(ctx context.Context, exe string, args ...string) *serviceExe {
 }
 
 func (s *serviceExe) processOutput(msg []byte) {
-	if s.name == decrediton {
-		log.Infof("[DECREDITON]%s: %s", s.name, string(msg))
+	// For dcrwallet, there is not a great indicator of sync status via RPC.
+	// We could potentially catch the output during startup and read it here.
+	// The sync line ends like below.
+	//
+	// Blockchain sync completed, wallet ready for general usage
+	if s.feed != nil {
+		s.feed(msg)
 	}
-	// log.Infof("%s: %s", s.name, string(msg))
 }
 
 // Run will run the service repeatedly until the service Context is canceled.
-func (s *serviceExe) Run() {
+func (s *serviceExe) Run() error {
 	defer close(s.done)
 	log.Infof("Running %q", s.cmd)
 	err := s.cmd.Run()
-	log.Tracef("%s finished: err = %v", s.name, err)
-	if s.ctx.Err() != nil {
-		return
-	}
-	if err != nil {
+	log.Tracef("%s finished", s.name)
+	if err != nil && s.ctx.Err() == nil {
 		log.Errorf("Error encountered running %q: %v", s.cmd, err)
 	}
+	return err
 }
 
 // func (s *serviceExe) Wait() {

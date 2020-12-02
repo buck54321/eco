@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/buck54321/eco"
 	"github.com/decred/slog"
@@ -169,7 +170,20 @@ func (gui *GUI) Run(ctx context.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		state, err := eco.State(ctx)
+		var err error
+		var state *eco.MetaState
+		for {
+			state, err = eco.State(ctx)
+			if err == nil {
+				break
+			}
+			log.Errorf("Unable to retrieve Eco state: %v. Trying again in 5 seconds", err)
+			select {
+			case <-time.After(time.Second * 5):
+			case <-ctx.Done():
+				return
+			}
+		}
 		gui.storeEcoState(&state.Eco)
 		if err != nil {
 			log.Errorf("Error retreiving Eco state: %v", err)
@@ -223,13 +237,13 @@ func (gui *GUI) Run(ctx context.Context) {
 			case "decrediton":
 				needsAppRowUpdate = gui.decreditonStatus() == nil
 				oldState := gui.storeDecreditonStatus(newState)
-				if oldState.On != newState.On {
+				if oldState == nil || oldState.On != newState.On {
 					gui.sendServiceStatusSignal(newState)
 				}
 			case "dexc":
 				needsAppRowUpdate = gui.dexcStatus() == nil
 				oldState := gui.storeDEXStatus(newState)
-				if oldState.On != newState.On {
+				if oldState == nil || oldState.On != newState.On {
 					gui.sendServiceStatusSignal(newState)
 				}
 			}
@@ -543,15 +557,17 @@ func (gui *GUI) initializeHomeBox() {
 		log.Errorf("Error adding dex background image: %v", err)
 	}
 	dexcWgt.Layout.Viewport = gui.winViewport
-	dexOn := false
 	bindClick(dexcWgt, func() {
-		if dexOn {
-			dexBitmap.SetImage(dexOffImg, float32(imgW), float32(imgH))
-			dexOn = false
-		} else {
-			dexBitmap.SetImage(dexOnImg, float32(imgW), float32(imgH))
-			dexOn = true
+		st := gui.dexcStatus()
+		if st == nil {
+			log.Errorf("Cannot start decrediton. Service not available.")
+			return
 		}
+		if st.On {
+			// Nothing to do
+			return
+		}
+		eco.StartDEX(gui.ctx)
 	})
 
 	gui.setDEXImg = func(on bool) {

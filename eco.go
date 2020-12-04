@@ -13,6 +13,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"os/exec"
 	"os/user"
@@ -31,6 +32,7 @@ import (
 	"github.com/decred/dcrd/chaincfg/v3"
 	chainjson "github.com/decred/dcrd/rpc/jsonrpc/types/v2"
 	"github.com/decred/dcrd/rpcclient/v6"
+	"golang.org/x/net/publicsuffix"
 )
 
 const (
@@ -142,6 +144,7 @@ func Run(outerCtx context.Context) {
 	// We need an inner Context that is delayed on cancellation to allow clean
 	// shutdown of e.g. dcrd
 	innerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	services := make(map[string]*ServiceStatus, 2)
 	services[decrediton] = &ServiceStatus{Service: decrediton}
@@ -634,7 +637,6 @@ func (eco *Eco) runContext(dur time.Duration, f func(context.Context)) {
 }
 
 func (eco *Eco) stopDCRD() error {
-	fmt.Println("--stopping dcrd")
 	if atomic.LoadUint32(&dcrdRunning) == 0 {
 		return fmt.Errorf("Cannot stop dcrd. Not running")
 	}
@@ -659,7 +661,6 @@ func (eco *Eco) stopDCRD() error {
 }
 
 func (eco *Eco) stopDCRWallet() error {
-	fmt.Println("--stopping wallet")
 	if atomic.LoadUint32(&dcrWalletRunning) == 0 {
 		return fmt.Errorf("Cannot stop dcrwallet. Not running")
 	}
@@ -755,13 +756,12 @@ func (eco *Eco) runDCRD() error {
 		eco.stateMtx.Unlock()
 
 		defer func() {
-			fmt.Println("--removing dcrd client")
 			eco.stateMtx.Lock()
 			eco.dcrd.client = nil
 			eco.stateMtx.Unlock()
 		}()
 
-		tryGetInfo := func() (bci *chainjson.GetBlockChainInfoResult) {
+		getInfo := func() (bci *chainjson.GetBlockChainInfoResult) {
 			var err error
 			eco.runContext(time.Second, func(ctx context.Context) {
 				bci, err = cl.GetBlockChainInfo(ctx)
@@ -777,7 +777,7 @@ func (eco *Eco) runDCRD() error {
 			if eco.outerCtx.Err() != nil {
 				return
 			}
-			if bcInfo = tryGetInfo(); bcInfo == nil {
+			if bcInfo = getInfo(); bcInfo == nil {
 				select {
 				case <-time.After(time.Second):
 					continue
@@ -807,7 +807,7 @@ func (eco *Eco) runDCRD() error {
 			delay = time.Second * 5
 			select {
 			case <-timer.C:
-				if bcInfo = tryGetInfo(); bcInfo == nil {
+				if bcInfo = getInfo(); bcInfo == nil {
 					timer.Stop()
 					continue
 				}
@@ -992,7 +992,7 @@ func (eco *Eco) runDCRWallet() error {
 
 		eco.signalDCRWalletRunning()
 
-		tryGetInfo := func() *wallettypes.InfoWalletResult {
+		getWalletInfo := func() *wallettypes.InfoWalletResult {
 			var err error
 			var nfo *wallettypes.InfoWalletResult
 
@@ -1000,7 +1000,7 @@ func (eco *Eco) runDCRWallet() error {
 				nfo, err = cl.GetInfo(ctx)
 			})
 			if err != nil {
-				log.Infof("tryGetInfo error: %v", err)
+				log.Infof("getWalletInfo error: %v", err)
 				return nil
 			}
 
@@ -1015,7 +1015,7 @@ func (eco *Eco) runDCRWallet() error {
 			// dcrwallet will keep requesting the password for initial sync
 			// until they have retrieved at least one block. Don't continue
 			// until dcrwallet confirms they have it.
-			if walletInfo = tryGetInfo(); walletInfo == nil || walletInfo.Blocks == 0 {
+			if walletInfo = getWalletInfo(); walletInfo == nil || walletInfo.Blocks == 0 {
 				select {
 				case <-time.After(time.Second):
 					continue
@@ -1044,7 +1044,7 @@ func (eco *Eco) runDCRWallet() error {
 			delay = time.Second * 5
 			select {
 			case <-timer.C:
-				if walletInfo = tryGetInfo(); walletInfo == nil {
+				if walletInfo = getWalletInfo(); walletInfo == nil {
 					timer.Stop()
 					continue
 				}
@@ -1128,8 +1128,14 @@ func (eco *Eco) runDecrediton() error {
 	return nil
 }
 
-func (eco *Eco) runDEX() error {
+type dexNewWalletForm struct {
+	AssetID uint32            `json:"assetID"`
+	Config  map[string]string `json:"config"`
+	Pass    encode.PassBytes  `json:"pass"`
+	AppPW   encode.PassBytes  `json:"appPass"`
+}
 
+func (eco *Eco) runDEX() error {
 	select {
 	case <-eco.dcrwalletReady:
 	case <-eco.outerCtx.Done():
@@ -1196,6 +1202,7 @@ func (eco *Eco) runDEX() error {
 			if err != nil {
 				return fmt.Errorf("Error unlocking wallet: %w", err)
 			}
+			log.Infof("Creating new 'dex' account")
 			err = cl.CreateNewAccount(eco.outerCtx, dexAcctName)
 			if err != nil {
 				return fmt.Errorf("Error creating new account: %w", err)
@@ -1221,88 +1228,42 @@ func (eco *Eco) runDEX() error {
 			return fmt.Errorf("JSON decode error: %w", err)
 		}
 
-		pwMsg, err := json.Marshal(&struct {
+		pwMsg := &struct {
 			Pass encode.PassBytes `json:"pass"`
 		}{
 			Pass: pw,
-		})
-		if err != nil {
-			return fmt.Errorf("JSON encode error: %v", err)
 		}
 
-		cookies := make(map[string]*http.Cookie)
-
-		request := func(route string, stuff []byte) ([]byte, error) {
-			req, err := http.NewRequestWithContext(eco.outerCtx, "POST", "http://localhost"+dexWebAddr+"/api/"+route, bytes.NewReader(stuff))
-			if err != nil {
-				return nil, fmt.Errorf("Error creating request: %v", err)
-			}
-			req.Header.Set("Content-Type", "application/json")
-			for _, c := range cookies {
-				fmt.Println("--setting cookie", c.Name, c.Value)
-				req.AddCookie(c)
-			}
-
-			resp, err := (&http.Client{}).Do(req)
-			if err != nil || resp.StatusCode != http.StatusOK {
-				return nil, fmt.Errorf("%s error: request error = %v, response code = %d", route, err, resp.StatusCode)
-			}
-
-			for _, c := range resp.Cookies() {
-				cookies[c.Name] = c
-			}
-
-			b, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				return nil, fmt.Errorf("Response body read error: %w", err)
-			}
-			return b, nil
-		}
+		request := dexCaller()
 
 		if !user.Initialized {
-			fmt.Println("--intializing client")
-			b, err := request("init", pwMsg)
+			_, err := request(eco.outerCtx, "init", pwMsg)
 			if err != nil {
 				return err
 			}
-			fmt.Println("--init response", string(b))
-		}
-
-		// Login
-		if !user.Authed || len(cookies) == 0 {
-			b, err := request("login", pwMsg)
+		} else {
+			// Login
+			_, err := request(eco.outerCtx, "login", pwMsg)
 			if err != nil {
 				return err
 			}
-			fmt.Println("--login response", string(b))
 		}
 
 		// Create wallet
 		if user.Assets[42].Wallet == nil {
-			fmt.Println("--making wallet")
-			newWalletForm := &struct {
-				AssetID uint32            `json:"assetID"`
-				Config  map[string]string `json:"config"`
-				Pass    encode.PassBytes  `json:"pass"`
-				AppPW   encode.PassBytes  `json:"appPass"`
-			}{
+			newWalletForm := &dexNewWalletForm{
 				AssetID: 42,
 				Config: map[string]string{
 					"account":   dexAcctName,
 					"username":  rpcUser,
 					"password":  rpcPass,
-					"rpclisten": dcrWalletRPCListen,
+					"rpclisten": "127.0.0.1" + dcrWalletRPCListen,
 					"rpccert":   dcrWalletRPCCert,
 				},
 				Pass:  pw,
 				AppPW: pw,
 			}
-			b, err := json.Marshal(newWalletForm)
-			if err != nil {
-				return fmt.Errorf("Error marshaling new wallet form: %w", err)
-			}
-			b, err = request("newwallet", b)
-			fmt.Println("--newwallet response", string(b))
+			_, err = request(eco.outerCtx, "newwallet", newWalletForm)
 			if err != nil && !strings.Contains(err.Error(), "already initialized") {
 				return err
 			}
@@ -1328,8 +1289,6 @@ func (eco *Eco) runDEX() error {
 					// the serviceExe.Run goroutine exits, so the user does
 					// not expect it to be running. They can now manually
 					// start dexc.
-
-					fmt.Println("--Killing dexc after initializing")
 
 					// Need a cleaner way to do this though.
 					svcExe.cancel()
@@ -1445,7 +1404,7 @@ func (eco *Eco) dcrctl(req *dcrCtlRequest) (*dcrCtlResponse, error) {
 		fmt.Sprintf("--rpcpass=%s", rpcPass),
 	}
 
-	exe := filepath.Join(programDirectory, version, dcrd, dcrctl)
+	exe := filepath.Join(programDirectory, version, decred, dcrctl)
 	var op []byte
 	var err error
 	eco.runContext(time.Second*60, func(ctx context.Context) {
@@ -1772,4 +1731,48 @@ func syncKey(svc string) string {
 
 func statusKey(svc string) string {
 	return "status#" + svc
+}
+
+func dexCaller() func(context.Context, string, interface{}) ([]byte, error) {
+	cj, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+	if err != nil {
+		panic("could not create cookie jar")
+	}
+	cl := http.Client{
+		Jar: cj,
+	}
+
+	return func(ctx context.Context, route string, thing interface{}) ([]byte, error) {
+		var b []byte
+		if thing != nil {
+			var err error
+			b, err = json.Marshal(thing)
+			if err != nil {
+				return nil, fmt.Errorf("JSON encode error: %v", err)
+			}
+		}
+		timedCtx, cancel := context.WithTimeout(ctx, time.Second*10)
+		defer cancel()
+		req, err := http.NewRequestWithContext(timedCtx, "POST", "http://localhost"+dexWebAddr+"/api/"+route, bytes.NewReader(b))
+		if err != nil {
+			return nil, fmt.Errorf("Error creating request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := cl.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("%s error: %v", route, err)
+		}
+
+		b, err = ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Response body read error: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("Request error: code = %d, msg = %s", resp.StatusCode, string(b))
+		}
+
+		return b, nil
+	}
 }

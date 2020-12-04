@@ -21,6 +21,7 @@ require (
 	github.com/jrick/logrotate v1.0.0
 	go.etcd.io/bbolt v1.3.5
 	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
+	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b
 )
 
 replace github.com/buck54321/eco/db => ../db

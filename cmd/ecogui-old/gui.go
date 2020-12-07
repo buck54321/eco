@@ -608,7 +608,6 @@ func (gui *GUI) initializeHomeBox() {
 			}
 		})
 	}
-
 	gi.AddNewStretch(appRow, "row.stretch.2")
 }
 
@@ -669,7 +668,6 @@ func (gui *GUI) updateApps() {
 			gui.appRow.AddChild(gui.apps.dcrctl)
 		}
 	})
-
 }
 
 func (gui *GUI) processDCRDSyncUpdate(u *eco.Progress) {
@@ -907,7 +905,7 @@ type PasswordField struct {
 	*gi.TextField
 }
 
-type eventConnector interface {
+eventDCRDSyncStatuseventConnector interface {
 	ki.Ki
 	gi.Node2D
 	ConnectEvent(oswin.EventType, gi.EventPris, ki.RecvFunc)

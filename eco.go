@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -616,6 +617,10 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 	report(1.0, "Upgrade complete")
 	eco.sendServiceStatus(&ServiceStatus{Service: decrediton})
 	go eco.start()
+}
+
+func (eco *Eco) saveEcoState() error {
+	return eco.db.EncodeStore(ecoStateKey, eco.state)
 }
 
 func (eco *Eco) dcrdProcess() (*serviceExe, *rpcclient.Client) {
@@ -1367,12 +1372,6 @@ func (eco *Eco) openDEXWindow() error {
 	}()
 	return nil
 }
-
-// saveEcoState should be called with the stateMtx >= RLocked.
-func (eco *Eco) saveEcoState() error {
-	return eco.db.EncodeStore(ecoStateKey, &eco.state.Eco)
-}
-
 func extractMethod(cmd string) string {
 	for _, token := range strings.Split(cmd, " ") {
 		if token != "" {
@@ -1382,13 +1381,26 @@ func extractMethod(cmd string) string {
 	return ""
 }
 
+// based on https://stackoverflow.com/a/47489846/1124661
+func tokenizeCmd(cmd string) ([]string, error) {
+	r := csv.NewReader(strings.NewReader(cmd))
+	r.Comma = ' ' // space
+	return r.Read()
+}
+
 func (eco *Eco) dcrctl(req *dcrCtlRequest) (*dcrCtlResponse, error) {
-	method := extractMethod(req.Cmd)
+	tokens, err := tokenizeCmd(req.Cmd)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing command: %v", err)
+	}
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("no command")
+	}
+	method := tokens[0]
 	switch method {
 	case "stop": // "walletlock", "walletpassphrase"
 		return nil, fmt.Errorf("method not allowed by Eco")
 	}
-
 	// Try dcrwallet first, then dcrd. It would be nice to use the
 	// Call/RawRequest methods, but we have no idea how to type the args.
 	eco.stateMtx.RLock()
@@ -1406,13 +1418,12 @@ func (eco *Eco) dcrctl(req *dcrCtlRequest) (*dcrCtlResponse, error) {
 
 	exe := filepath.Join(programDirectory, version, decred, dcrctl)
 	var op []byte
-	var err error
 	eco.runContext(time.Second*60, func(ctx context.Context) {
 		args := preArgs
 		args = append(args, fmt.Sprintf("--rpcserver=127.0.0.1%s", dcrWalletRPCListen))
 		args = append(args, fmt.Sprintf("--rpccert=\"%s\"", dcrWalletRPCCert))
 		args = append(args, "--wallet")
-		args = append(args, req.Cmd)
+		args = append(args, tokens...)
 		cmd := exec.CommandContext(ctx, exe, args...)
 		cmd.Dir = filepath.Dir(exe)
 		op, err = cmd.Output()
@@ -1429,10 +1440,10 @@ func (eco *Eco) dcrctl(req *dcrCtlRequest) (*dcrCtlResponse, error) {
 		args = append(args, req.Cmd)
 		cmd := exec.CommandContext(ctx, exe, args...)
 		cmd.Dir = filepath.Dir(exe)
-		op, err = cmd.Output()
+		op, err = cmd.CombinedOutput()
 	})
 	if err != nil {
-		return &dcrCtlResponse{Err: err.Error()}, nil
+		return &dcrCtlResponse{Err: fmt.Sprintf("%v: %s", err, string(op))}, nil
 	}
 	return &dcrCtlResponse{Body: string(op)}, nil
 

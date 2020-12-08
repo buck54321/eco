@@ -113,6 +113,9 @@ func Run(outerCtx context.Context) {
 			SyncMode: SyncModeUninitialized,
 		}
 		dcrdState = dcrdNewState()
+
+		fmt.Println("--storing eco state", dirtyEncode(state))
+
 		dbb.EncodeStore(ecoStateKey, state)
 		dbb.EncodeStore(svcKey(dcrd), dcrdState)
 		dcrWalletState = dcrWalletNewState()
@@ -163,7 +166,7 @@ func Run(outerCtx context.Context) {
 			Eco:      *state,
 			Services: map[string]*ServiceStatus{},
 		},
-		versionDir:     filepath.Join(programDirectory, state.Version),
+		versionDir:     filepath.Join(EcoDir, state.Version),
 		dcrd:           &DCRD{DCRDState: *dcrdState},
 		dcrwallet:      &DCRWallet{DCRWalletState: *dcrWalletState},
 		syncChans:      make(map[chan *FeedMessage]struct{}),
@@ -199,11 +202,11 @@ func Run(outerCtx context.Context) {
 			// If we didn't even create the server, something is desperately
 			// wrong.
 			log.Errorf("Error creating Eco server: %v", err)
-			return
+			break
 		}
 
 		if outerCtx.Err() != nil {
-			return
+			break
 		}
 		// We only get here with an unkown server error. Wait a second and loop
 		// again.
@@ -224,6 +227,7 @@ func (eco *Eco) start() {
 		log.Errorf("dcrwallet startup error: %w", err)
 	}
 
+	// The dexInputKey is only stored until initialized.
 	if dexNeedsInit, _ := eco.db.FetchDecode(dexInputKey, new(pwCache)); dexNeedsInit {
 		err := eco.runDEX()
 		if err != nil {
@@ -302,6 +306,15 @@ func (eco *Eco) returnSyncChan(ch chan *FeedMessage) {
 }
 
 func (eco *Eco) sendSyncUpdate(pu *Progress) {
+
+	fmt.Println("--sendSyncUpdate", dirtyEncode(pu))
+
+	eco.syncMtx.Lock()
+	defer eco.syncMtx.Unlock()
+	st := eco.state.Services[pu.Service]
+	if st != nil {
+		st.Sync = pu
+	}
 	eco.sendFeedMessage(syncKey(pu.Service), MsgTypeSyncStatusUpdate, pu)
 }
 
@@ -346,27 +359,11 @@ type releaseAsset struct {
 func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 	eco.stateMtx.Lock()
 	defer eco.stateMtx.Unlock()
-	var reportErr error
-	report := func(p float32, s string, a ...interface{}) {
-		if reportErr != nil {
-			return
-		}
-		reportErr = sendProgress(conn, "eco", fmt.Sprintf(s, a...), "", p)
-		if reportErr != nil {
-			log.Errorf("Error reporting progress: %v", reportErr)
-		}
-	}
-	fail := func(s string, err error) {
-		if err != nil {
-			log.Errorf("%s: %v", s, err)
-		} else {
-			log.Error(s)
-		}
-		sendProgress(conn, "eco", "", s, 0)
-	}
+
+	prog := newProgressReporter(conn, "eco")
 
 	if len(req.PW) == 0 && !walletFileExists() {
-		fail("Password required to initialize wallet", nil)
+		prog.fail("Password required to initialize wallet", nil)
 		return
 	}
 
@@ -375,47 +372,47 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 	if eco.state.Eco.Version != "" {
 		b, _ := eco.db.Fetch(crypterKey)
 		if len(b) > 0 {
-			fail("Eco is already initialized", nil)
+			prog.fail("Eco is already initialized", nil)
 			return
 		}
 	}
 
-	report(0.05, "Checking for updates")
+	prog.report(0.05, "Checking for updates")
 	releases, err := fetchReleases()
 	if err != nil {
-		fail("Error fetching releases", err)
+		prog.fail("Error fetching releases", err)
 		return
 	}
 	// For now, just get the most recent release, regardless of whether it is
 	// pre-release. Eventually, we'll want to initially seed with latest stable
 	// release, then offer pre-releases as a user preference.
 	if len(releases) == 0 {
-		fail("No releases fetched", nil)
+		prog.fail("No releases fetched", nil)
 		return
 	}
 	release := releases[0]
 	assets, err := parseAssets(release)
 	if err != nil {
-		fail("Failed to parse assets", err)
+		prog.fail("Failed to parse assets", err)
 		return
 	}
 
-	versionDir := filepath.Join(programDirectory, release.Name)
+	versionDir := filepath.Join(EcoDir, release.Name)
 
-	skipDownload := true
+	skipDownload := false
 	if skipDownload {
 		log.Critical("Don't forget to remove skipDownload := true")
 	} else { // Need a way to disable re-download during testing here.
 		// All assets were found. Download and unpack them to a temporary directory.
 		tmpDir, err := ioutil.TempDir("", "")
 		if err != nil {
-			fail("Failed to create temporary directory", err)
+			prog.fail("Failed to create temporary directory", err)
 			return
 		}
 		defer os.RemoveAll(tmpDir)
 
 		// Fetch and parse the manifests.
-		report(0.1, "Downloading the hash manifests")
+		prog.report(0.1, "Downloading hash manifests")
 		hashes := make(map[string][]byte)
 
 		parseParts := func(line string) []string {
@@ -434,12 +431,12 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 			log.Infof("Downloading %s", m.Name)
 			m.path, err = fetchAsset(eco.outerCtx, tmpDir, m.URL, m.Name)
 			if err != nil {
-				fail("Failed to fetch manifest", err)
+				prog.fail("Failed to fetch manifest", err)
 				return
 			}
 			manifestFile, err := os.Open(m.path)
 			if err != nil {
-				fail("Error opening manifest file", err)
+				prog.fail("Error opening manifest file", err)
 				return
 			}
 			defer manifestFile.Close()
@@ -453,32 +450,32 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 				parts := parseParts(line)
 				if len(parts) != 2 {
 					err := fmt.Errorf("Manifest line parse error. Expected 2 parts, got %d for %q: %q", len(parts), line, parts)
-					fail("Manifest parse error", err)
+					prog.fail("Manifest parse error", err)
 					return
 				}
 				b, err := hex.DecodeString(parts[0])
 				if err != nil {
-					fail("Hex decode error", err)
+					prog.fail("Hex decode error", err)
 					return
 				}
 				if len(b) != sha256.Size {
 					err := fmt.Errorf("Invalid manifest hash length. Wanted %d, got %d", sha256.Size, len(b))
-					fail("Invalid manifest length", err)
+					prog.fail("Invalid manifest length", err)
 					return
 				}
 				hashes[parts[1]] = b
 			}
 
 			if err := scanner.Err(); err != nil {
-				fail("Error reading manifest: %w", err)
+				prog.fail("Error reading manifest: %w", err)
 				return
 			}
 		}
 
 		// Fetch, unpack, and move all resources.
-		err = moveResources(eco.outerCtx, tmpDir, assets, hashes, report)
+		err = moveResources(eco.outerCtx, tmpDir, assets, hashes, prog.subReporter(0.12, 0.80))
 		if err != nil {
-			fail("Error moving assets", err)
+			prog.fail("Error moving assets", err)
 			return
 		}
 
@@ -488,12 +485,12 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 		// your browser at ..."
 		_, _, found, err := chromium(eco.outerCtx)
 		if err != nil {
-			fail("Error searching for Chromium", err)
+			prog.fail("Error searching for Chromium", err)
 			return
 		}
 		if !found {
 			// If we have a file to download, do it.
-			err := downloadChromium(eco.outerCtx, tmpDir, versionDir)
+			err := downloadChromium(eco.outerCtx, tmpDir, versionDir, prog.subReporter(0.80, 0.85))
 			if err != nil {
 				log.Errorf("Error downloading Chromium: %v", err)
 			}
@@ -504,7 +501,7 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 		err = eco.db.Store(crypterKey, crypter.Serialize())
 		if err != nil {
 			err := fmt.Errorf("Upgraded to version %s, but failed to save encryption key to the DB: %w", release.Name, err)
-			fail("DB error storing encryption key", err)
+			prog.fail("DB error storing encryption key", err)
 			return
 		}
 	}
@@ -512,23 +509,25 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 	// Need to cache the password until we can initialize DEX.
 	pwc, err := newPWCache(req.PW)
 	if err != nil {
-		fail("Encryption error", err)
+		prog.fail("Encryption error", err)
 		return
 	}
 	err = eco.db.EncodeStore(dexInputKey, pwc)
 	if err != nil {
-		fail("Error storing dex input", err)
+		prog.fail("Error storing dex input", err)
 		return
 	}
 
 	if !walletFileExists() {
+		prog.report(0.85, "Initializing dcrwallet")
 		createWallet := func() bool {
 			// Write the user's password to a file.
 			passFile, err := ioutil.TempFile("", "")
 			if err != nil {
-				fail("Error initializing wallet pass file", err)
+				prog.fail("Error initializing wallet pass file", err)
 				return false
 			}
+			// Delete the file asap.
 			defer os.Remove(passFile.Name())
 			passFile.Write([]byte(fmt.Sprintf("pass=%s\n", string(req.PW))))
 
@@ -538,12 +537,12 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 			crypter := encrypt.NewCrypter(req.PW)
 			encSeed, err := crypter.Encrypt(seed)
 			if err != nil {
-				fail("Error encrypting wallet seed", err)
+				prog.fail("Error encrypting wallet seed", err)
 				return false
 			}
 			err = eco.db.Store(walletSeedKey, encSeed)
 			if err != nil {
-				fail("Error storing wallet seed", err)
+				prog.fail("Error storing wallet seed", err)
 				return false
 			}
 
@@ -560,7 +559,7 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 				var stdin io.WriteCloser
 				stdin, err = svcExe.cmd.StdinPipe()
 				if err != nil {
-					fail("Error writing wallet answers", err)
+					prog.fail("Error writing wallet answers", err)
 					return
 				}
 				go func() {
@@ -571,7 +570,7 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 				err = svcExe.Run()
 				if err != nil {
 					log.Errorf("Error creating wallet: err = %v, output = %s", err)
-					fail("Error creating wallet", err)
+					prog.fail("Error creating wallet", err)
 				}
 			})
 			if err != nil {
@@ -587,12 +586,12 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 			// is started and a sync has begun.
 			pwc, err := newPWCache(req.PW)
 			if err != nil {
-				fail("Encryption error", err)
+				prog.fail("Encryption error", err)
 				return false
 			}
 			err = eco.db.EncodeStore(extraInputKey, pwc)
 			if err != nil {
-				fail("Error storing extra input", err)
+				prog.fail("Error storing extra input", err)
 				return false
 			}
 
@@ -609,18 +608,19 @@ func (eco *Eco) initEco(conn net.Conn, req *initRequest) {
 	err = eco.saveEcoState()
 	if err != nil {
 		err := fmt.Errorf("Upgraded to version %s, but failed to save new state to the DB: %w", release.Name, err)
-		fail("DB error storing eco state", err)
+		prog.fail("DB error storing eco state", err)
 		return
 	}
 
 	// The client should close the connection up on receiving progress = 1.0.
-	report(1.0, "Upgrade complete")
+	prog.report(1.0, "Upgrade complete")
 	eco.sendServiceStatus(&ServiceStatus{Service: decrediton})
 	go eco.start()
 }
 
 func (eco *Eco) saveEcoState() error {
-	return eco.db.EncodeStore(ecoStateKey, eco.state)
+	fmt.Println("--saveEcoState", dirtyEncode(eco.state))
+	return eco.db.EncodeStore(ecoStateKey, eco.state.Eco)
 }
 
 func (eco *Eco) dcrdProcess() (*serviceExe, *rpcclient.Client) {
@@ -719,7 +719,7 @@ func (eco *Eco) runDCRD() error {
 			On:      false,
 		})
 		for {
-			exe := filepath.Join(programDirectory, eco.state.Eco.Version, decred, dcrdExeName)
+			exe := filepath.Join(EcoDir, eco.state.Eco.Version, decred, dcrdExeName)
 
 			svcExe := newExe(eco.innerCtx, exe, args...)
 			eco.dcrd.exe = svcExe
@@ -789,52 +789,51 @@ func (eco *Eco) runDCRD() error {
 				case <-eco.outerCtx.Done():
 					return
 				}
-				continue
 			}
 			break
 		}
 		startHeight := bcInfo.Blocks
 		syncing := bcInfo.InitialBlockDownload || bcInfo.SyncHeight-startHeight > 1
-		delay := time.Second * 5
-		if !syncing {
-			eco.signalDCRDSynced()
-			// Send a progress report for fully synced.
+
+		sendSyncUpdate := func() (synced bool) {
+			if bcInfo = getInfo(); bcInfo == nil {
+				return
+			}
+			h := bcInfo.SyncHeight
+			if bcInfo.Headers > h {
+				h = bcInfo.Headers
+			}
+			toGo := h - bcInfo.Blocks
+			syncing = bcInfo.InitialBlockDownload || toGo > 1
+			if !syncing {
+				eco.signalDCRDSynced()
+				eco.sendSyncUpdate(&Progress{
+					Service:  dcrd,
+					Status:   "Fully synced",
+					Progress: 1.0,
+				})
+				return true
+			}
+			progress := 1 - float32(toGo)/float32(h-startHeight)
 			eco.sendSyncUpdate(&Progress{
 				Service:  dcrd,
-				Status:   "Fully synced",
-				Progress: 1.0,
+				Status:   fmt.Sprintf("Syncing blockchain at block %d", bcInfo.Blocks),
+				Progress: progress,
 			})
-			delay = time.Second * 30
+			return
 		}
 
+		sendSyncUpdate()
+
+		delay := time.Second * 5
 		for {
 			timer := time.NewTimer(delay)
 			delay = time.Second * 5
 			select {
 			case <-timer.C:
-				if bcInfo = getInfo(); bcInfo == nil {
-					timer.Stop()
-					continue
-				}
-				toGo := bcInfo.SyncHeight - bcInfo.Blocks
-				syncing = bcInfo.InitialBlockDownload || toGo > 1
-				if !syncing {
-					eco.signalDCRDSynced()
-					eco.sendSyncUpdate(&Progress{
-						Service:  dcrd,
-						Status:   "Fully synced",
-						Progress: 1.0,
-					})
+				if !sendSyncUpdate() {
 					delay = time.Second * 30
-					continue
 				}
-				progress := 1 - float32(toGo)/float32(bcInfo.SyncHeight-startHeight)
-				eco.sendSyncUpdate(&Progress{
-					Service:  dcrd,
-					Status:   fmt.Sprintf("Syncing blockchain at block %d", bcInfo.Blocks),
-					Progress: progress,
-				})
-
 			case <-eco.innerCtx.Done():
 				timer.Stop()
 				return
@@ -940,7 +939,7 @@ func (eco *Eco) runDCRWallet() error {
 
 			// We might not have a version until initialized, so we can't create the
 			// command before here.
-			exe := filepath.Join(programDirectory, eco.state.Eco.Version, decred, dcrWalletExeName)
+			exe := filepath.Join(EcoDir, eco.state.Eco.Version, decred, dcrWalletExeName)
 			svcExe = newExe(eco.innerCtx, exe, args...)
 			eco.dcrwallet.exe = svcExe
 			svcExe.Run()
@@ -968,10 +967,11 @@ func (eco *Eco) runDCRWallet() error {
 		// startup, this may fail until the TLS keypair is generated, which
 		// is probably only once.
 
-		var cl *walletclient.Client
+		var wcl *walletclient.Client
+		// dcrdClient
 		for {
 			var err error
-			cl, err = eco.dcrWalletClient()
+			wcl, err = eco.dcrWalletClient()
 			if err == nil {
 				break
 			}
@@ -986,7 +986,7 @@ func (eco *Eco) runDCRWallet() error {
 			}
 		}
 		eco.stateMtx.Lock()
-		eco.dcrwallet.client = cl
+		eco.dcrwallet.client = wcl
 		eco.stateMtx.Unlock()
 
 		defer func() {
@@ -1002,7 +1002,7 @@ func (eco *Eco) runDCRWallet() error {
 			var nfo *wallettypes.InfoWalletResult
 
 			eco.runContext(time.Second, func(ctx context.Context) {
-				nfo, err = cl.GetInfo(ctx)
+				nfo, err = wcl.GetInfo(ctx)
 			})
 			if err != nil {
 				log.Infof("getWalletInfo error: %v", err)
@@ -1031,10 +1031,11 @@ func (eco *Eco) runDCRWallet() error {
 			break
 		}
 
+		fmt.Println("--a.10")
+
 		// Delete the extraInput from the database, since it may contain
 		// a password.
 		if hasExtraInput {
-
 			eco.db.Store(extraInputKey, nil)
 		}
 
@@ -1044,20 +1045,59 @@ func (eco *Eco) runDCRWallet() error {
 		// mode. I don't believe that dcrwallet offers any information via RPC
 		// on wallet sync status.
 		delay := time.Second * 5
+		synced := false
 		for {
 			timer := time.NewTimer(delay)
 			delay = time.Second * 5
 			select {
 			case <-timer.C:
+				fmt.Println("--checking sync", synced)
+
 				if walletInfo = getWalletInfo(); walletInfo == nil {
-					timer.Stop()
+					if synced {
+						synced = false
+						eco.sendSyncUpdate(&Progress{Service: dcrwallet, Err: "dcrwallet disconnected"})
+					}
 					continue
 				}
-
-				// We can compare walletInfo.Blocks to dcrd's GetInfoResult
-				// to see if the wallet is synced.
-
 				delay = time.Second * 30
+
+				eco.stateMtx.RLock()
+				cl := eco.dcrd.client
+				syncMode := eco.state.Eco.SyncMode
+				eco.stateMtx.RUnlock()
+
+				if syncMode != SyncModeFull || cl == nil {
+					continue
+				}
+				var err error
+				var bci *chainjson.GetBlockChainInfoResult
+				eco.runContext(time.Second, func(ctx context.Context) {
+					bci, err = cl.GetBlockChainInfo(ctx)
+				})
+				u := &Progress{Service: dcrwallet}
+				if err != nil {
+					u.Err = "Wallet sync error"
+					log.Infof("GetBlockChainInfo error in wallet loop: %v", err)
+				} else {
+					h := bci.SyncHeight
+					if bci.Headers > h {
+						h = bci.Headers
+					}
+
+					if h > 0 {
+						if int64(walletInfo.Blocks) >= h {
+							u.Progress = 1
+							synced = true
+
+							fmt.Println("--dcrwallet synced")
+						}
+						u.Progress = float32(walletInfo.Blocks) / float32(h)
+					}
+
+					u.Status = "Syncing"
+				}
+				eco.sendSyncUpdate(u)
 
 			case <-eco.outerCtx.Done():
 				timer.Stop()
@@ -1109,14 +1149,14 @@ func (eco *Eco) runDecrediton() error {
 		fmt.Sprintf("--rpcpass=%s", eco.dcrd.RPCPass),
 		fmt.Sprintf("--rpccert=%s", dcrdCertPath),
 		fmt.Sprintf("--rpcconnect=%s", "localhost"+dcrdRPCListen),
-		fmt.Sprintf("--custombinpath=%s", filepath.Join(programDirectory, eco.state.Eco.Version, decred)),
+		fmt.Sprintf("--custombinpath=%s", filepath.Join(EcoDir, eco.state.Eco.Version, decred)),
 	}
 
 	if eco.state.Eco.SyncMode == SyncModeSPV {
 		args = append(args, "--spv")
 	}
 
-	exe := filepath.Join(programDirectory, eco.state.Eco.Version, decrediton, decreditonExeName)
+	exe := filepath.Join(EcoDir, eco.state.Eco.Version, decrediton, decreditonExeName)
 
 	svcExe := newExe(eco.innerCtx, exe, args...)
 
@@ -1173,7 +1213,7 @@ func (eco *Eco) runDEX() error {
 		fmt.Sprintf("--webaddr=%s", "localhost"+dexWebAddr),
 	}
 
-	exe := filepath.Join(programDirectory, eco.state.Eco.Version, dexc, dexcExeName)
+	exe := filepath.Join(EcoDir, eco.state.Eco.Version, dexc, dexcExeName)
 
 	svcExe := newExe(eco.innerCtx, exe, args...)
 
@@ -1416,7 +1456,7 @@ func (eco *Eco) dcrctl(req *dcrCtlRequest) (*dcrCtlResponse, error) {
 		fmt.Sprintf("--rpcpass=%s", rpcPass),
 	}
 
-	exe := filepath.Join(programDirectory, version, decred, dcrctl)
+	exe := filepath.Join(EcoDir, version, decred, dcrctl)
 	var op []byte
 	eco.runContext(time.Second*60, func(ctx context.Context) {
 		args := preArgs
@@ -1515,6 +1555,44 @@ func parseAssets(release *githubRelease) (*releaseAssets, error) {
 
 func (eco *Eco) filepath(subpaths ...string) string {
 	return filepath.Join(append([]string{AppDir}, subpaths...)...)
+}
+
+type progressReporter struct {
+	report func(p float32, s string, a ...interface{})
+	fail   func(s string, err error)
+}
+
+func newProgressReporter(conn net.Conn, svc string) *progressReporter {
+	var reportErr error
+	return &progressReporter{
+		report: func(p float32, s string, a ...interface{}) {
+			if reportErr != nil {
+				return
+			}
+			reportErr = sendProgress(conn, svc, fmt.Sprintf(s, a...), "", p)
+			if reportErr != nil {
+				log.Errorf("Error reporting progress: %v", reportErr)
+			}
+		},
+		fail: func(s string, err error) {
+			if err != nil {
+				log.Errorf("%s: %v", s, err)
+			} else {
+				log.Error(s)
+			}
+			sendProgress(conn, svc, "", s, 0)
+		},
+	}
+}
+
+func (r *progressReporter) subReporter(start, end float32) *progressReporter {
+	vRange := end - start
+	return &progressReporter{
+		report: func(p float32, s string, a ...interface{}) {
+			r.report(start+(vRange*p), s, a...)
+		},
+		fail: r.fail,
+	}
 }
 
 func checkFileHash(archivePath string, checkHash []byte) error {
@@ -1629,6 +1707,8 @@ func newFeedMessage(typeID FeedMessageType, contents interface{}) (*FeedMessage,
 }
 
 func Feed(ctx context.Context, feeders *EcoFeeders) {
+	log.Infof("Starting Eco Feed")
+	defer log.Infof("Eco Feed closing")
 	for {
 		err := genericFeed(ctx, routeSync, []struct{}{}, func(ok bool, b []byte) bool {
 			if !ok {
@@ -1728,8 +1808,6 @@ func genericFeed(ctx context.Context, route string, req interface{}, f func(bool
 			return nil
 		}
 	}
-
-	return nil
 }
 
 func svcKey(svc string) string {
@@ -1786,4 +1864,9 @@ func dexCaller() func(context.Context, string, interface{}) ([]byte, error) {
 
 		return b, nil
 	}
+}
+
+func dirtyEncode(thing interface{}) string {
+	b, _ := json.Marshal(thing)
+	return string(b)
 }

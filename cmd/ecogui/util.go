@@ -12,11 +12,14 @@ import (
 
 	"fyne.io/fyne"
 	"fyne.io/fyne/canvas"
+	"github.com/buck54321/eco"
 	"github.com/nfnt/resize"
 )
 
+var staticRoot = filepath.Join(eco.EcoDir, "static")
+
 func mustLoadStaticResource(rsc string) *fyne.StaticResource {
-	b, err := ioutil.ReadFile(filepath.Join("static", rsc))
+	b, err := ioutil.ReadFile(filepath.Join(staticRoot, rsc))
 	if err != nil {
 		panic("error loading font " + err.Error())
 	}

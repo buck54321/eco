@@ -31,7 +31,7 @@ type elementStyle struct {
 	cursor                                desktop.Cursor
 	display                               elementDisplay
 	position                              elementPosition
-	scroll                                elementScroll
+	// scroll                                elementScroll
 	// spacing doesn't really have an analogue in web layout, but it does in
 	// other systems like Qt.  spacing only applies along the orientation
 	// direction, and adds additional space between child elements.
@@ -42,6 +42,11 @@ type elementStyle struct {
 	// width = 100, the nested element will end up with width 100, not 10, since
 	// we prioritize the left/right pair over the hard-coded width.
 	left, right, top, bottom *int
+	// expandVertically should be used with caution. In particular, it will
+	// probably not behave as desired when part of a column layout. It's really
+	// only intended to support a "main window" like outer wrapper that holds
+	// all the things, but it can be used other places too.
+	expandVertically bool
 }
 
 type elementDisplay uint8
@@ -58,13 +63,13 @@ const (
 	positionAbsolute
 )
 
-type elementScroll uint8 // Bitmask
+// type elementScroll uint8 // Bitmask
 
-const (
-	scrollNope = 1 << iota
-	scrollVertical
-	scrollHorizontal
-)
+// const (
+// 	scrollNope = 1 << iota
+// 	scrollVertical
+// 	scrollHorizontal
+// )
 
 // A Element is a widget used to hold another element or elements, and adds
 // fully adjustable padding, margins, background-color,
@@ -119,6 +124,10 @@ func (b *Element) Resize(sz fyne.Size) {
 		return
 	}
 
+	if b.name == "homeBox" || b.name == "appRow" {
+		fmt.Printf("--Element.Resize for %s: %v \n", b.name, sz)
+	}
+
 	b.size = sz
 	b.claimed = b.minSize
 	cfg := b.cfg
@@ -135,17 +144,24 @@ func (b *Element) Resize(sz fyne.Size) {
 			b.claimed.Width = cfg.maxW
 		}
 	}
-	// Give the kids a chance to be greedy too.
-	flowingKids, positionedKids := layoutItems(b.kids)
-	for _, o := range flowingKids {
-		if isNativeInline(o) {
+	if cfg.expandVertically {
+		b.claimed.Height = sz.Height
+	}
+	// // Give the kids a chance to be greedy too.
+	for _, o := range b.kids {
+		if isNativeInline(o) || isAbsolutelyPositioned(o) {
 			continue
+		}
+		if b.name == "homeBox" || b.name == "appRow" {
+			fmt.Printf("-- %s resizing child %T \n", b.name, o)
 		}
 		o.Resize(b.claimed)
 	}
 	// Recalculate our own MinSize.
 	b.Refresh()
-	b.lyt.positionAbsolutely(positionedKids)
+	if b.cachedRenderer != nil {
+		b.cachedRenderer.Layout(b.claimed)
+	}
 }
 
 // Size returns the current size of this object.
@@ -157,6 +173,13 @@ func (b *Element) Size() fyne.Size {
 // state changed.
 func (b *Element) Refresh() {
 	for _, o := range b.kids {
+		if b.name == "homeBox" {
+			if el, _ := o.(*Element); el != nil {
+				fmt.Printf("--homeBox refreshing child Element %s \n", el.name)
+			} else {
+				fmt.Printf("--homeBox refreshing child %T \n", o)
+			}
+		}
 		o.Refresh()
 	}
 
@@ -176,6 +199,10 @@ func (b *Element) Refresh() {
 
 	if cfg.display == displayInline {
 		b.claimed.Width = minW
+	}
+
+	if cfg.expandVertically { // Height set in Resize.
+		return
 	}
 
 	b.claimed.Height = b.minSize.Height
@@ -347,13 +374,25 @@ func (lyt *elementLayout) layoutRow(objects []fyne.CanvasObject, minW int) {
 	spacing := cfg.spacing
 
 	var padding int
-	if n > 1 && justi != justifyStart {
-		divisor := (n - 1)
-		if justi == justifyAround {
-			divisor = n
+	switch justi {
+	case justifyStart:
+	case justifyAround:
+		if n > 0 {
+			padding = (availWidth - minW) / n
 		}
-		padding = (availWidth - minW) / divisor
+	case justifyBetween:
+		if n > 1 {
+			padding = (availWidth - minW) / (n - 1)
+		}
 	}
+
+	// if n > 1 && justi != justifyStart {
+	// 	divisor := (n - 1)
+	// 	if justi == justifyAround {
+	// 		divisor = n
+	// 	}
+	// 	padding = (availWidth - minW) / divisor
+	// }
 
 	pos := fyne.NewPos(0, 0)
 	if justi == justifyAround {
@@ -375,6 +414,10 @@ func (lyt *elementLayout) layoutRow(objects []fyne.CanvasObject, minW int) {
 		}
 
 		pos.Y = y
+
+		if lyt.el.name == "appRow" {
+			fmt.Printf("-- %T: pos = %v, claimed = %v, size = %v, n = %v \n", o, pos, claimed, size, len(flowingObs))
+		}
 
 		o.Move(pos)
 
@@ -399,12 +442,16 @@ func (lyt *elementLayout) layoutColumn(objects []fyne.CanvasObject, minH int) {
 	spacing := cfg.spacing
 
 	var padding int
-	if n > 1 && justi != justifyStart {
-		divisor := (n - 1)
-		if justi == justifyAround {
-			divisor = n
+	switch justi {
+	case justifyStart:
+	case justifyAround:
+		if n > 0 {
+			padding = (availHeight - minH) / n
 		}
-		padding = (availHeight - minH) / divisor
+	case justifyBetween:
+		if n > 1 {
+			padding = (availHeight - minH) / (n - 1)
+		}
 	}
 
 	pos := fyne.NewPos(0, 0)
@@ -431,6 +478,10 @@ func (lyt *elementLayout) layoutColumn(objects []fyne.CanvasObject, minH int) {
 		pos.X = x
 
 		o.Move(pos)
+
+		if lyt.el.name == "homeBox" {
+			fmt.Printf("-- %T, position = %v, claimed.Width = %v, size = %v \n", o, pos, claimed.Width, size)
+		}
 
 		pos.Y += size.Height + padding + spacing
 	}
@@ -555,12 +606,6 @@ func (r *blockRenderer) MinSize() fyne.Size {
 
 // Objects returns all objects that should be drawn.
 func (r *blockRenderer) Objects() []fyne.CanvasObject {
-	if r.el.name == "homeBox" {
-		for _, o := range append(r.el.obs, r.el.kids...) {
-			fmt.Printf("-- blockRenderer.Objects %T to %v, size %v \n", o, o.Position(), o.Size())
-		}
-	}
-
 	return append(r.el.obs, r.el.kids...)
 }
 

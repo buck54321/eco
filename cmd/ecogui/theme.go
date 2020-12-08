@@ -9,7 +9,6 @@ import (
 
 var (
 	defaultBorderColor = stringToColor("#333")
-	windowLogo         = mustLoadStaticResource("dcr-logo.png")
 )
 
 type defaultTheme struct {
@@ -21,8 +20,8 @@ type defaultTheme struct {
 func newDefaultTheme() *defaultTheme {
 	return &defaultTheme{
 		Theme:       theme.DarkTheme(),
-		regularFont: mustLoadStaticResource(regularFont),
-		boldFont:    mustLoadStaticResource(boldFont),
+		regularFont: fontRegular,
+		boldFont:    fontBold,
 	}
 }
 

@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image/color"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne"
 	"fyne.io/fyne/app"
@@ -16,15 +19,55 @@ import (
 	"github.com/buck54321/eco"
 )
 
-var (
-	decreditonBGPath     = mustLoadStaticResource("decrediton-launcher.png")
-	decreditonBGOnPath   = mustLoadStaticResource("decrediton-launched.png")
-	dexLauncherBGPath    = mustLoadStaticResource("dex-launcher.png")
-	dexLaunchedBGPath    = mustLoadStaticResource("dex-launched.png")
-	dcrctlLauncherBGPath = mustLoadStaticResource("dcrctl-plus.png")
-	leftArrow            = mustLoadStaticResource("larrow.svg")
-	spinnerIcon          = mustLoadStaticResource("spinner.png")
+const (
+	introductionText = "For the best security and the full range of Decred services, you'll want to sync the full blockchain, which will use around 5 GB of disk space. If you're only interested in basic wallet functionality, you may choose to sync in SPV mode, which will be very fast and use about 100 MB of disk space."
 )
+
+var (
+	logoRsrc, decreditonBGPath, decreditonBGOnPath, dexLauncherBGPath,
+	dexLaunchedBGPath, dcrctlLauncherBGPath, leftArrow, spinnerIcon,
+	windowLogo, fontRegular, fontBold *fyne.StaticResource
+
+	bttnColor    = stringToColor("#005")
+	bgColor      = stringToColor("#000006")
+	blockerColor = stringToColor("#000006aa")
+	transparent  = stringToColor("#0000")
+	white        = stringToColor("#fff")
+
+	decredKeyBlue   = stringToColor("#2970ff")
+	decredTurquoise = stringToColor("#2ed6a1")
+	decredDarkBlue  = stringToColor("#091440")
+	decredLightBlue = stringToColor("#70cbff")
+	decredGreen     = stringToColor("#41bf53")
+	decredOrange    = stringToColor("#ed6d47")
+
+	defaultButtonColor      = stringToColor("#003")
+	defaultButtonHoverColor = stringToColor("#005")
+	buttonColor2            = stringToColor("#001a08")
+	buttonHoverColor2       = stringToColor("#00251a")
+	textColor               = stringToColor("#c1c1c1")
+	cursorColor             = stringToColor("#2970fe")
+	focusColor              = cursorColor
+	black                   = stringToColor("#000")
+	inputColor              = stringToColor("#111")
+)
+
+func init() {
+	if _, err := os.Stat("static"); err == nil {
+		staticRoot = "static"
+	}
+	logoRsrc = mustLoadStaticResource("eco-logo.png")
+	decreditonBGPath = mustLoadStaticResource("decrediton-launcher.png")
+	decreditonBGOnPath = mustLoadStaticResource("decrediton-launched.png")
+	dexLauncherBGPath = mustLoadStaticResource("dex-launcher.png")
+	dexLaunchedBGPath = mustLoadStaticResource("dex-launched.png")
+	dcrctlLauncherBGPath = mustLoadStaticResource("dcrctl-plus.png")
+	leftArrow = mustLoadStaticResource("larrow.svg")
+	spinnerIcon = mustLoadStaticResource("spinner.png")
+	windowLogo = mustLoadStaticResource("dcr-logo.png")
+	fontRegular = mustLoadStaticResource("SourceSans3-Regular.ttf")
+	fontBold = mustLoadStaticResource("source-sans-pro-semibold.ttf")
+}
 
 type GUI struct {
 	ctx      context.Context
@@ -35,15 +78,16 @@ type GUI struct {
 	logo     *canvas.Image
 
 	// Eco state data.
-	stateMtx     sync.RWMutex
-	ecoSt        *eco.EcoState
-	decreditonSt *eco.ServiceStatus
-	dexSt        *eco.ServiceStatus
+	stateMtx         sync.RWMutex
+	ecoStatus        *eco.EcoState
+	decreditonStatus *eco.ServiceStatus
+	dexStatus        *eco.ServiceStatus
 
 	// Intro page
 	intro struct {
-		box *Element
-		pw  *betterEntry
+		box   *Element
+		pw    *betterEntry
+		pwRow *Element
 	}
 
 	// Downloading page
@@ -56,7 +100,7 @@ type GUI struct {
 	// Home page
 	home struct {
 		box      *Element
-		progress *widget.Label
+		progress *ecoLabel
 		appRow   *Element
 	}
 
@@ -67,21 +111,25 @@ type GUI struct {
 		onImg    *canvas.Image
 	}
 	dex struct {
-		launcher *Element
-		offImg   *canvas.Image
-		onImg    *canvas.Image
+		launcher   *Element
+		offImg     *canvas.Image
+		onImg      *canvas.Image
+		spinnerBox *Element
+		spinner    *spinner
 	}
 	dcrctl struct {
 		// AppLauncher.
 		launcher *Element
 		// dcrctl+
-		view    *Element
-		results *betterEntry
-		input   *betterEntry
+		view       *Element
+		results    *betterEntry
+		input      *betterEntry
+		spinnerBox *Element
+		spinner    *spinner
 	}
 }
 
-func NewGUI() *GUI {
+func NewGUI(ctx context.Context) *GUI {
 	a := app.New()
 	a.Settings().SetTheme(newDefaultTheme())
 	w := a.NewWindow("Decred Eco")
@@ -91,6 +139,7 @@ func NewGUI() *GUI {
 	mainView := container.NewVScroll(container.NewVBox(container.NewCenter()))
 
 	gui := &GUI{
+		ctx:      ctx,
 		app:      a,
 		driver:   a.Driver(),
 		window:   w,
@@ -112,53 +161,138 @@ func NewGUI() *GUI {
 	return gui
 }
 
-func (gui *GUI) Run(ctx context.Context) {
+func (gui *GUI) Run() {
 	var wg sync.WaitGroup
-	gui.ctx = ctx
-	// wg.Add(1)
-	// go func() {
-	// 	defer wg.Done()
-	// 	var err error
-	// 	var state *eco.MetaState
-	// 	for {
-	// 		state, err = eco.State(ctx)
-	// 		if err == nil {
-	// 			break
-	// 		}
-	// 		log.Errorf("Unable to retrieve Eco state: %v. Trying again in 5 seconds", err)
-	// 		select {
-	// 		case <-time.After(time.Second * 5):
-	// 		case <-ctx.Done():
-	// 			return
-	// 		}
-	// 	}
-	// 	gui.storeEcoState(&state.Eco)
-	// 	if err != nil {
-	// 		log.Errorf("Error retreiving Eco state: %v", err)
-	// 		gui.processDCRDSyncUpdate(&eco.Progress{Err: "Error retreiving Eco state. Is the Eco system service running?"})
-	// 		gui.showIntroView()
-	// 		return
-	// 	}
-	// 	for svc, svcStatus := range state.Services {
-	// 		switch svc {
-	// 		case "decrediton":
-	// 			gui.storeDecreditonStatus(svcStatus)
-	// 		case "dexc":
-	// 			gui.storeDEXStatus(svcStatus)
-	// 		}
-	// 	}
-	// 	if state.Eco.WalletExists {
-	// 		gui.introPW.SetText("")
-	// 	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var state *eco.MetaState
+		for {
+			var err error
+			state, err = eco.State(ctx)
+			if err == nil {
+				break
+			}
+			gui.home.progress.setText("Unable to retrieve Eco state: %v", err)
+			select {
+			case <-time.After(time.Second * 5):
+			case <-ctx.Done():
+				return
+			}
+		}
+		gui.storeEcoState(&state.Eco)
 
-	// 	// gui.updateApps()
+		fmt.Println("--eco state", dirtyEncode(state))
 
-	// 	if state.Eco.SyncMode == eco.SyncModeUninitialized {
-	// 		gui.showIntroView()
-	// 		return
-	// 	}
-	// 	gui.showHomeView()
-	// }()
+		st := state.Services["dcrd"]
+		dcrdLoading := st == nil
+
+		fmt.Println("--dcrLoading", dcrdLoading)
+
+		if !dcrdLoading {
+			gui.home.appRow.Show()
+		}
+
+		st = state.Services["dcrwallet"]
+		walletSyncing := st == nil || st.Sync == nil || st.Sync.Progress < 0.999
+		if walletSyncing {
+			gui.dcrctl.spinnerBox.Show()
+			gui.dcrctl.spinner.Show()
+		}
+
+		fmt.Println("--walletSyncing", walletSyncing)
+
+		fmt.Println("--SyncMode full", state.Eco.SyncMode == eco.SyncModeFull)
+
+		var dexLoading bool
+		if state.Eco.SyncMode == eco.SyncModeFull {
+			gui.dex.launcher.Show()
+			if walletSyncing {
+				dexLoading = true
+				gui.dex.spinnerBox.Show()
+				gui.dex.spinner.Show()
+			}
+		}
+
+		if state.Eco.WalletExists {
+			gui.intro.pwRow.Hide()
+		}
+
+		if state.Eco.SyncMode == eco.SyncModeUninitialized {
+			gui.showIntroView()
+		}
+
+		gui.home.box.Refresh()
+		canvas.Refresh(gui.home.appRow)
+
+		eco.Feed(gui.ctx, &eco.EcoFeeders{
+			SyncStatus: func(u *eco.Progress) {
+
+				fmt.Println("--SyncStatus", dirtyEncode(u))
+
+				if walletSyncing && u.Service == "dcrwallet" && u.Progress > 0.999 {
+					walletSyncing = false
+					gui.dcrctl.spinnerBox.Hide()
+					gui.dcrctl.spinner.Hide()
+					canvas.Refresh(gui.dcrctl.launcher)
+					gui.dex.spinnerBox.Hide()
+					gui.dex.spinner.Hide()
+					canvas.Refresh(gui.dex.launcher)
+				}
+				if u.Service == "dcrd" {
+					if dcrdLoading {
+						dcrdLoading = false
+						gui.home.appRow.Show()
+						gui.home.box.Refresh()
+						canvas.Refresh(gui.home.box)
+					}
+					gui.processDCRDSyncUpdate(u)
+				}
+			},
+			ServiceStatus: func(st *eco.ServiceStatus) {
+
+				fmt.Println("--ServiceStatus", dirtyEncode(st))
+
+				if dexLoading && !walletSyncing {
+					dexLoading = false
+					if walletSyncing {
+						gui.dex.spinnerBox.Show()
+						gui.dex.spinner.Show()
+						canvas.Refresh(gui.dex.launcher)
+					}
+				}
+
+				switch st.Service {
+				case "dexc":
+					old := gui.storeDEXState(st)
+					if old == nil || old.On != st.On {
+						if st.On {
+							gui.dex.onImg.Show()
+							gui.dex.offImg.Hide()
+						} else {
+							gui.dex.onImg.Hide()
+							gui.dex.offImg.Show()
+						}
+						canvas.Refresh(gui.dex.launcher)
+					}
+				case "decrediton":
+					old := gui.storeDecreditonState(st)
+					if old == nil || old.On != st.On {
+						if st.On {
+							gui.decrediton.onImg.Show()
+							gui.decrediton.offImg.Hide()
+						} else {
+							gui.decrediton.onImg.Hide()
+							gui.decrediton.offImg.Show()
+						}
+						canvas.Refresh(gui.decrediton.launcher)
+					}
+				}
+
+			},
+		})
+		// gui.showHomeView()
+	}()
 
 	// go func() {
 	// 	ticker := time.NewTicker(time.Second)
@@ -193,15 +327,22 @@ func (gui *GUI) initializeIntroView() {
 	pw.Password = true
 	pw.ExtendBaseWidget(pw)
 
+	gui.intro.pwRow = newElement(&elementStyle{
+		padding:      borderSpecs{10, 10, 10, 10},
+		bgColor:      inputColor,
+		borderRadius: 3,
+		maxW:         450,
+	}, pw)
+
 	bttn1 := newEcoBttn(&bttnOpts{
 		bgColor:    buttonColor2,
 		hoverColor: buttonHoverColor2,
 	}, "Full Sync", func(*fyne.PointEvent) {
-		fmt.Println("Ooh. That felt nice.")
+		gui.initEco(eco.SyncModeFull)
 	})
 
 	bttn2 := newEcoBttn(nil, "Lite Mode (SPV)", func(*fyne.PointEvent) {
-		fmt.Println("That felt so so.")
+		gui.initEco(eco.SyncModeSPV)
 	})
 
 	bttnRow := newElement(&elementStyle{
@@ -223,12 +364,7 @@ func (gui *GUI) initializeIntroView() {
 		},
 		gui.logo,
 		newLabelWithWidth(intro, 430),
-		newElement(&elementStyle{
-			padding:      borderSpecs{10, 10, 10, 10},
-			bgColor:      inputColor,
-			borderRadius: 3,
-			maxW:         450,
-		}, pw),
+		gui.intro.pwRow,
 		bttnRow,
 	)
 }
@@ -273,8 +409,7 @@ func (gui *GUI) showDownloadView() {
 func (gui *GUI) initializeHomeView() {
 	// A label describing the current sync state. Could do dcrd on left and
 	// dcrwallet on right.
-	gui.home.progress = widget.NewLabel("syncing blockchain...")
-	gui.home.progress.Resize(gui.home.progress.MinSize())
+	gui.home.progress = newEcoLabel("syncing blockchain...", &textStyle{fontSize: 16})
 
 	makeAppLauncher := func(click func(*fyne.PointEvent), imgs ...fyne.CanvasObject) *Element {
 		return newElement(&elementStyle{
@@ -289,21 +424,43 @@ func (gui *GUI) initializeHomeView() {
 		)
 	}
 
+	newSpinnerBox := func() (*Element, *spinner) {
+		var zero int
+		spinner := newSpinner(gui.ctx, 7, 40, decredKeyBlue, decredGreen)
+		spinnerBox := newElement(&elementStyle{
+			position: positionAbsolute,
+			left:     &zero,
+			right:    &zero,
+			top:      &zero,
+			bottom:   &zero,
+			ori:      orientationHorizontal,
+			align:    alignMiddle,
+			justi:    justifyAround,
+			bgColor:  blockerColor,
+		},
+			spinner,
+		)
+		spinnerBox.Hide()
+		// spinner is hidden by default
+		return spinnerBox, spinner
+	}
+
 	// Decrediton
 	gui.decrediton.offImg = newSizedImage(decreditonBGPath, 0, 150)
 	gui.decrediton.onImg = newSizedImage(decreditonBGOnPath, 0, 150)
 	gui.decrediton.onImg.Hide()
-	var state bool
+
 	gui.decrediton.launcher = makeAppLauncher(func(*fyne.PointEvent) {
-		if state {
-			gui.decrediton.offImg.Show()
-			gui.decrediton.onImg.Hide()
-		} else {
-			gui.decrediton.offImg.Hide()
-			gui.decrediton.onImg.Show()
+		st := gui.decreditonState()
+		if st == nil {
+			log.Errorf("Cannot start decrediton. Service not available.")
+			return
 		}
-		canvas.Refresh(gui.decrediton.launcher)
-		state = !state
+		if st.On {
+			// Nothing to do
+			return
+		}
+		eco.StartDecrediton(gui.ctx)
 	},
 		gui.decrediton.offImg,
 		gui.decrediton.onImg,
@@ -313,27 +470,32 @@ func (gui *GUI) initializeHomeView() {
 	gui.dex.offImg = newSizedImage(dexLauncherBGPath, 0, 150)
 	gui.dex.onImg = newSizedImage(dexLaunchedBGPath, 0, 150)
 	gui.dex.onImg.Hide()
-	var dexState bool
+	gui.dex.spinnerBox, gui.dex.spinner = newSpinnerBox()
 	gui.dex.launcher = makeAppLauncher(func(*fyne.PointEvent) {
-		if dexState {
-			gui.dex.offImg.Show()
-			gui.dex.onImg.Hide()
-		} else {
-			gui.dex.offImg.Hide()
-			gui.dex.onImg.Show()
+		st := gui.dexState()
+		if st == nil {
+			log.Errorf("Cannot start decrediton. Service not available.")
+			return
 		}
-		canvas.Refresh(gui.dex.launcher)
-		dexState = !dexState
+		if st.On {
+			// Nothing to do
+			return
+		}
+		eco.StartDEX(gui.ctx)
 	},
 		gui.dex.offImg,
 		gui.dex.onImg,
+		gui.dex.spinnerBox,
 	)
+	gui.dex.launcher.Hide()
 
 	// DCRCtl+
+	gui.dcrctl.spinnerBox, gui.dcrctl.spinner = newSpinnerBox()
 	gui.dcrctl.launcher = makeAppLauncher(func(*fyne.PointEvent) {
 		gui.showDCRCtl()
 	},
 		newSizedImage(dcrctlLauncherBGPath, 0, 150),
+		gui.dcrctl.spinnerBox,
 	)
 
 	// A horizontal div (with wrapping?) holding image buttons to start various
@@ -348,32 +510,23 @@ func (gui *GUI) initializeHomeView() {
 		gui.dex.launcher,
 		gui.dcrctl.launcher,
 	)
+	gui.home.appRow.Hide()
 
-	zero := 0
-	absEl := newElement(&elementStyle{
-		position: positionAbsolute,
-		left:     &zero,
-		top:      &zero,
-		// bottom:   &zero,
-		right:   &zero,
-		width:   50,
-		height:  50,
-		bgColor: stringToColor("#0ff"),
-	})
+	gui.home.appRow.name = "appRow"
 
 	gui.home.box = newElement(
 		&elementStyle{
-			padding: borderSpecs{80, 0, 0, 0},
+			padding: borderSpecs{20, 0, 0, 0},
 			align:   alignCenter,
 			spacing: 20,
-			bgColor: stringToColor("#333"),
+			// expandVertically: true,
+			// justi:            justifyStart,
 		},
 		gui.logo,
 		gui.home.progress,
 		gui.home.appRow,
-		absEl,
-		newElement(&elementStyle{width: 50, height: 50, bgColor: stringToColor("#fee")}),
 	)
+	gui.home.box.name = "homeBox"
 }
 
 func (gui *GUI) showHomeView() {
@@ -492,56 +645,88 @@ func (gui *GUI) showDCRCtl() {
 func (gui *GUI) storeEcoState(newState *eco.EcoState) (oldState *eco.EcoState) {
 	gui.stateMtx.Lock()
 	defer gui.stateMtx.Unlock()
-	oldState = gui.ecoSt
-	gui.ecoSt = newState
+	oldState = gui.ecoStatus
+	gui.ecoStatus = newState
 	return oldState
 }
 
-func (gui *GUI) decreditonStatus() *eco.ServiceStatus {
+func (gui *GUI) decreditonState() *eco.ServiceStatus {
 	gui.stateMtx.RLock()
 	defer gui.stateMtx.RUnlock()
-	return gui.decreditonSt
+	return gui.decreditonStatus
 }
 
-func (gui *GUI) storeDecreditonStatus(newState *eco.ServiceStatus) (oldState *eco.ServiceStatus) {
+func (gui *GUI) storeDecreditonState(newState *eco.ServiceStatus) (oldState *eco.ServiceStatus) {
 	gui.stateMtx.Lock()
 	defer gui.stateMtx.Unlock()
-	oldState = gui.decreditonSt
-	gui.decreditonSt = newState
+	oldState = gui.decreditonStatus
+	gui.decreditonStatus = newState
 	return oldState
 }
 
-func (gui *GUI) storeDEXStatus(newState *eco.ServiceStatus) (oldState *eco.ServiceStatus) {
+func (gui *GUI) storeDEXState(newState *eco.ServiceStatus) (oldState *eco.ServiceStatus) {
 	gui.stateMtx.Lock()
 	defer gui.stateMtx.Unlock()
-	oldState = gui.dexSt
-	gui.dexSt = newState
+	oldState = gui.dexStatus
+	gui.dexStatus = newState
 	return oldState
+}
+
+func (gui *GUI) dexState() *eco.ServiceStatus {
+	gui.stateMtx.RLock()
+	defer gui.stateMtx.RUnlock()
+	return gui.dexStatus
 }
 
 func (gui *GUI) processDCRDSyncUpdate(u *eco.Progress) {
 	if u.Err != "" {
-		gui.home.progress.SetText("dcrd sync error: " + u.Err)
+		gui.home.progress.setText("dcrd sync error: %s", u.Err)
 		return
 	}
-	gui.home.progress.SetText(fmt.Sprintf("%s (%.1f%%)", u.Status, u.Progress*100))
+	gui.home.progress.setText("%s (%.0f%%)", u.Status, u.Progress*100)
+	gui.home.progress.Refresh()
+	gui.home.box.Refresh()
+	canvas.Refresh(gui.home.box)
 }
 
-// func (gui *GUI) updateApps() {
-// 	gui.appRow.DeleteChildren(false)
-// 	walletReady := gui.decreditonStatus() != nil
-// 	if walletReady {
-// 		gui.appRow.AddChild(gui.apps.decrediton)
-// 	}
-
-// 	if gui.dexcStatus() != nil {
-// 		gui.appRow.AddChild(gui.apps.dex)
-// 	}
-
-// 	if walletReady {
-// 		gui.appRow.AddChild(gui.apps.dcrctl)
-// 	}
-// }
+// initEco should be run in a goroutine.
+func (gui *GUI) initEco(syncMode eco.SyncMode) {
+	pw := gui.intro.pw.Text
+	ch, err := eco.Init(gui.ctx, pw, syncMode)
+	if err != nil {
+		gui.download.msg.setText("Error initalizing Eco: %v", err)
+		return
+	}
+	gui.showDownloadView()
+	for {
+		select {
+		case u := <-ch:
+			if err != nil {
+				gui.download.msg.setText(err.Error())
+				return
+			}
+			if u.Err != "" {
+				gui.download.msg.setText(u.Err)
+				return
+			}
+			gui.download.msg.setText(u.Status)
+			gui.download.progress.setText("%.0f%%", u.Progress*100)
+			gui.download.box.Refresh()
+			canvas.Refresh(gui.download.box)
+			if u.Progress > 0.9999 {
+				if syncMode == eco.SyncModeFull {
+					gui.dex.spinnerBox.Show()
+					gui.dex.spinner.Show()
+					gui.dex.launcher.Show()
+				}
+				gui.showHomeView()
+				return
+			}
+		case <-gui.ctx.Done():
+			return
+		}
+	}
+}
 
 type peeker struct {
 	min    fyne.Size
@@ -643,4 +828,9 @@ func (r *peekerRenderer) Objects() []fyne.CanvasObject {
 // This might trigger a Layout.
 func (r *peekerRenderer) Refresh() {
 	// fmt.Println("--peekerRenderer.Refresh")
+}
+
+func dirtyEncode(thing interface{}) string {
+	b, _ := json.Marshal(thing)
+	return string(b)
 }

@@ -136,7 +136,7 @@ const (
 // 	}
 // }
 
-func layoutItems(objects []fyne.CanvasObject) (flowing []fyne.CanvasObject, positioned []fyne.CanvasObject) {
+func layoutItems(objects []fyne.CanvasObject) (flowing, positioned []fyne.CanvasObject) {
 	for _, o := range objects {
 		if !o.Visible() {
 			continue

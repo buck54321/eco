@@ -290,7 +290,7 @@ func (s *Server) handleSyncRequest(conn net.Conn) {
 
 func (s *Server) handleStartDecrediton(conn net.Conn) {
 	err := s.eco.runDecrediton()
-	resp := &EcoError{}
+	resp := &Error{}
 	if err != nil {
 		resp.Msg = err.Error()
 	}
@@ -304,7 +304,7 @@ func (s *Server) handleStartDecrediton(conn net.Conn) {
 
 func (s *Server) handleStartDEX(conn net.Conn) {
 	err := s.eco.openDEXWindow()
-	resp := &EcoError{}
+	resp := &Error{}
 	if err != nil {
 		resp.Msg = err.Error()
 	}

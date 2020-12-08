@@ -18,11 +18,12 @@ import (
 )
 
 var (
+	EcoDir = "/opt/decred-eco"
+
 	serverAddress             = &NetAddr{"unix", filepath.Join(AppDir, UnixSocketFilename)}
 	decredPattern             = regexp.MustCompile(`^decred-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.tar\.gz$`)
 	decreditonPattern         = regexp.MustCompile(`^decrediton-v(.*)\.tar\.gz$`)
 	dexcPattern               = regexp.MustCompile(`^dexc-` + runtime.GOOS + `-` + runtime.GOARCH + `-v(.*)\.tar\.gz$`)
-	programDirectory          = "/opt/decred-eco"
 	dcrdExeName               = dcrd
 	dcrWalletExeName          = dcrwallet
 	decreditonExeName         = decrediton
@@ -129,19 +130,20 @@ func moveDirectoryContents(fromDir, toDir string) error {
 	})
 }
 
-func moveResources(ctx context.Context, tmpDir string, assets *releaseAssets, hashes map[string][]byte, report func(float32, string, ...interface{})) error {
-	versionDir := filepath.Join(programDirectory, assets.version)
+func moveResources(ctx context.Context, tmpDir string, assets *releaseAssets, hashes map[string][]byte, prog *progressReporter) error {
+	versionDir := filepath.Join(EcoDir, assets.version)
 	err := os.MkdirAll(versionDir, 0755)
 	if err != nil {
 		return fmt.Errorf("error creating version directory: %w", err)
 	}
 
-	fetchMove := func(subDir string, asset *releaseAsset) error {
-		err = fetchAndUnpack(ctx, tmpDir, asset, hashes)
+	fetchMove := func(subDir string, asset *releaseAsset, prog *progressReporter) error {
+		err = fetchAndUnpack(ctx, tmpDir, asset, hashes, prog.subReporter(0, 0.9))
 		if err != nil {
 			return fmt.Errorf("Archive retrieval error: %w", err)
 		}
 
+		prog.report(0.9, "Installing %s", asset.Name)
 		tgt := filepath.Join(versionDir, subDir)
 		err = moveDirectoryContents(asset.path, tgt)
 		if err != nil {
@@ -150,14 +152,12 @@ func moveResources(ctx context.Context, tmpDir string, assets *releaseAssets, ha
 		return nil
 	}
 
-	report(0.25, "Installing program files for %s", assets.version)
-	err = fetchMove(decred, assets.decred)
+	err = fetchMove(decred, assets.decred, prog.subReporter(0.25, 0.60))
 	if err != nil {
 		return fmt.Errorf("Decred program files: %w", err)
 	}
 
-	report(0.60, "Installing Decrediton %s", assets.version)
-	err = fetchMove(decrediton, assets.decrediton)
+	err = fetchMove(decrediton, assets.decrediton, prog.subReporter(0.60, 0.85))
 	if err != nil {
 		return fmt.Errorf("Decrediton files: %w", err)
 	}
@@ -169,8 +169,7 @@ func moveResources(ctx context.Context, tmpDir string, assets *releaseAssets, ha
 		log.Errorf("Error removing Decrediton bin directory: %v", err)
 	}
 
-	report(0.85, "Installing DEX %s", assets.version)
-	err = fetchMove(dexc, assets.dexc)
+	err = fetchMove(dexc, assets.dexc, prog.subReporter(0.85, 1))
 	if err != nil {
 		return fmt.Errorf("DEX files: %w", err)
 	}
@@ -179,25 +178,28 @@ func moveResources(ctx context.Context, tmpDir string, assets *releaseAssets, ha
 }
 
 // fetchAndUnpack unpacks the archive and sets the asset.path.
-func fetchAndUnpack(ctx context.Context, tmpDir string, asset *releaseAsset, hashes map[string][]byte) error {
+func fetchAndUnpack(ctx context.Context, tmpDir string, asset *releaseAsset, hashes map[string][]byte, prog *progressReporter) error {
 	checkHash, found := hashes[asset.Name]
 	if !found {
 		return fmt.Errorf("No hash in manifest for %s", asset.Name)
 	}
 
 	// Fetch the main asset.
+	prog.report(0, "Fetching %s", asset.Name)
 	archivePath, err := fetchAsset(ctx, tmpDir, asset.URL, asset.Name)
 	if err != nil {
 		return fmt.Errorf("Error fetching %q: %w", asset.Name, err)
 	}
 
 	// Check the hash.
+	prog.report(0.73, "Validating %s", asset.Name)
 	err = checkFileHash(archivePath, checkHash)
 	if err != nil {
 		return fmt.Errorf("Failed file hash check: %w", err)
 	}
 
 	// Unpack.
+	prog.report(0.75, "Unpacking %s", asset.Name)
 	asset.path, err = unpack(archivePath)
 	if err != nil {
 		return fmt.Errorf("Error unpacking %q: %w", asset.Name, err)
@@ -247,22 +249,25 @@ func chromiumDownloadPath() (string, [32]byte) {
 	return "", [32]byte{}
 }
 
-func downloadChromium(ctx context.Context, tmpDir, versionDir string) error {
+func downloadChromium(ctx context.Context, tmpDir, versionDir string, prog *progressReporter) error {
 	downloadPath, checkHash := chromiumDownloadPath()
 	if downloadPath == "" {
 		return fmt.Errorf("no download path for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
+	prog.report(0, "Fetching Chromium")
 	outPath, err := fetchAsset(ctx, tmpDir, downloadPath, "chromium.zip")
 	if err != nil {
 		return err
 	}
 
+	prog.report(0.75, "Validating Chromium download")
 	err = checkFileHash(outPath, checkHash[:])
 	if err != nil {
 		return err
 	}
 
+	prog.report(0.80, "Extracting Chromium")
 	unpacked, err := unzip(outPath)
 	if err != nil {
 		return fmt.Errorf("unzip error: %v", err)

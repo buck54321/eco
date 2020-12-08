@@ -5,11 +5,11 @@ import (
 	"github.com/buck54321/eco/encrypt"
 )
 
-type EcoError struct {
+type Error struct {
 	Msg string
 }
 
-func (e *EcoError) Errorf() string {
+func (e *Error) Error() string {
 	return e.Msg
 }
 
@@ -57,6 +57,7 @@ type Progress struct {
 type ServiceStatus struct {
 	Service string
 	On      bool
+	Sync    *Progress
 }
 
 // There are a couple of times when a password needs to be saved to disk

@@ -1,0 +1,8 @@
+[Unit]
+Description=Decred Eco system service
+
+[Service]
+ExecStart=<ExecStart>
+
+[Install]
+WantedBy=multi-user.target

@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/driver/desktop"
 	"fyne.io/fyne/widget"
 	"github.com/buck54321/eco"
+	"github.com/buck54321/eco/ui"
 )
 
 const (
@@ -25,48 +26,25 @@ const (
 
 var (
 	logoRsrc, decreditonBGPath, decreditonBGOnPath, dexLauncherBGPath,
-	dexLaunchedBGPath, dcrctlLauncherBGPath, leftArrow, spinnerIcon,
-	windowLogo, fontRegular, fontBold *fyne.StaticResource
-
-	bttnColor    = stringToColor("#005")
-	bgColor      = stringToColor("#000006")
-	blockerColor = stringToColor("#000006aa")
-	transparent  = stringToColor("#0000")
-	white        = stringToColor("#fff")
-
-	decredKeyBlue   = stringToColor("#2970ff")
-	decredTurquoise = stringToColor("#2ed6a1")
-	decredDarkBlue  = stringToColor("#091440")
-	decredLightBlue = stringToColor("#70cbff")
-	decredGreen     = stringToColor("#41bf53")
-	decredOrange    = stringToColor("#ed6d47")
-
-	defaultButtonColor      = stringToColor("#003")
-	defaultButtonHoverColor = stringToColor("#005")
-	buttonColor2            = stringToColor("#001a08")
-	buttonHoverColor2       = stringToColor("#00251a")
-	textColor               = stringToColor("#c1c1c1")
-	cursorColor             = stringToColor("#2970fe")
-	focusColor              = cursorColor
-	black                   = stringToColor("#000")
-	inputColor              = stringToColor("#111")
+	dexLaunchedBGPath, dcrctlLauncherBGPath, leftArrow, windowLogo, fontRegular,
+	fontBold *fyne.StaticResource
 )
 
 func init() {
+	// If we're running from the repo cmd/ecogui directory, use the repo static
 	if _, err := os.Stat("static"); err == nil {
-		staticRoot = "static"
+		ui.StaticRoot = "static"
 	}
-	logoRsrc = mustLoadStaticResource("eco-logo.png")
-	decreditonBGPath = mustLoadStaticResource("decrediton-launcher.png")
-	decreditonBGOnPath = mustLoadStaticResource("decrediton-launched.png")
-	dexLauncherBGPath = mustLoadStaticResource("dex-launcher.png")
-	dexLaunchedBGPath = mustLoadStaticResource("dex-launched.png")
-	dcrctlLauncherBGPath = mustLoadStaticResource("dcrctl-plus.png")
-	leftArrow = mustLoadStaticResource("larrow.svg")
-	spinnerIcon = mustLoadStaticResource("spinner.png")
-	windowLogo = mustLoadStaticResource("dcr-logo.png")
-	fontRegular = mustLoadStaticResource("SourceSans3-Regular.ttf")
-	fontBold = mustLoadStaticResource("source-sans-pro-semibold.ttf")
+	logoRsrc = ui.MustLoadStaticResource("eco-logo.png")
+	decreditonBGPath = ui.MustLoadStaticResource("decrediton-launcher.png")
+	decreditonBGOnPath = ui.MustLoadStaticResource("decrediton-launched.png")
+	dexLauncherBGPath = ui.MustLoadStaticResource("dex-launcher.png")
+	dexLaunchedBGPath = ui.MustLoadStaticResource("dex-launched.png")
+	dcrctlLauncherBGPath = ui.MustLoadStaticResource("dcrctl-plus.png")
+	leftArrow = ui.MustLoadStaticResource("larrow.svg")
+	windowLogo = ui.MustLoadStaticResource("dcr-logo.png")
+	// fontRegular = ui.MustLoadStaticResource("SourceSans3-Regular.ttf")
+	// fontBold = ui.MustLoadStaticResource("source-sans-pro-semibold.ttf")
 }
 
 type GUI struct {
@@ -85,53 +63,53 @@ type GUI struct {
 
 	// Intro page
 	intro struct {
-		box   *Element
+		box   *ui.Element
 		pw    *betterEntry
-		pwRow *Element
+		pwRow *ui.Element
 	}
 
 	// Downloading page
 	download struct {
-		box      *Element
-		progress *ecoLabel
-		msg      *ecoLabel
+		box      *ui.Element
+		progress *ui.EcoLabel
+		msg      *ui.EcoLabel
 	}
 
 	// Home page
 	home struct {
-		box      *Element
-		progress *ecoLabel
-		appRow   *Element
+		box      *ui.Element
+		progress *ui.EcoLabel
+		appRow   *ui.Element
 	}
 
 	// Apps
 	decrediton struct {
-		launcher *Element
+		launcher *ui.Element
 		offImg   *canvas.Image
 		onImg    *canvas.Image
 	}
 	dex struct {
-		launcher   *Element
+		launcher   *ui.Element
 		offImg     *canvas.Image
 		onImg      *canvas.Image
-		spinnerBox *Element
+		spinnerBox *ui.Element
 		spinner    *spinner
 	}
 	dcrctl struct {
 		// AppLauncher.
-		launcher *Element
+		launcher *ui.Element
 		// dcrctl+
-		view       *Element
+		view       *ui.Element
 		results    *betterEntry
 		input      *betterEntry
-		spinnerBox *Element
+		spinnerBox *ui.Element
 		spinner    *spinner
 	}
 }
 
 func NewGUI(ctx context.Context) *GUI {
 	a := app.New()
-	a.Settings().SetTheme(newDefaultTheme())
+	a.Settings().SetTheme(ui.NewDefaultTheme())
 	w := a.NewWindow("Decred Eco")
 	w.SetIcon(windowLogo)
 	w.Resize(fyne.NewSize(1024, 768))
@@ -145,7 +123,7 @@ func NewGUI(ctx context.Context) *GUI {
 		window:   w,
 		mainView: mainView,
 	}
-	gui.logo = newSizedImage(logoRsrc, 0, 30)
+	gui.logo = ui.NewSizedImage(logoRsrc, 0, 30)
 
 	gui.initializeIntroView()
 	gui.initializeDownloadView()
@@ -173,7 +151,7 @@ func (gui *GUI) Run() {
 			if err == nil {
 				break
 			}
-			gui.home.progress.setText("Unable to retrieve Eco state: %v", err)
+			gui.home.progress.SetText("Unable to retrieve Eco state: %v", err)
 			select {
 			case <-time.After(time.Second * 5):
 			case <-ctx.Done():
@@ -327,16 +305,16 @@ func (gui *GUI) initializeIntroView() {
 	pw.Password = true
 	pw.ExtendBaseWidget(pw)
 
-	gui.intro.pwRow = newElement(&elementStyle{
-		padding:      borderSpecs{10, 10, 10, 10},
-		bgColor:      inputColor,
-		borderRadius: 3,
-		maxW:         450,
+	gui.intro.pwRow = ui.NewElement(&ui.Style{
+		Padding:      ui.FourSpec{10, 10, 10, 10},
+		BgColor:      ui.InputColor,
+		BorderRadius: 3,
+		MaxW:         450,
 	}, pw)
 
 	bttn1 := newEcoBttn(&bttnOpts{
-		bgColor:    buttonColor2,
-		hoverColor: buttonHoverColor2,
+		bgColor:    ui.ButtonColor2,
+		hoverColor: ui.ButtonHoverColor2,
 	}, "Full Sync", func(*fyne.PointEvent) {
 		gui.initEco(eco.SyncModeFull)
 	})
@@ -345,25 +323,25 @@ func (gui *GUI) initializeIntroView() {
 		gui.initEco(eco.SyncModeSPV)
 	})
 
-	bttnRow := newElement(&elementStyle{
-		maxW:  450,
-		justi: justifyAround,
-		ori:   orientationHorizontal,
+	bttnRow := ui.NewElement(&ui.Style{
+		MaxW:  450,
+		Justi: ui.JustifyAround,
+		Ori:   ui.OrientationHorizontal,
 	},
 		bttn1,
 		bttn2,
 	)
 
-	gui.intro.box = newElement(
-		&elementStyle{
-			spacing: 30,
-			padding: borderSpecs{20, 0, 0, 0},
+	gui.intro.box = ui.NewElement(
+		&ui.Style{
+			Spacing: 30,
+			Padding: ui.FourSpec{20, 0, 0, 0},
 			// maxW:    450,
-			align: alignCenter,
+			Align: ui.AlignCenter,
 			// bgColor: stringToColor("#ff0"),
 		},
 		gui.logo,
-		newLabelWithWidth(intro, 430),
+		ui.NewLabelWithWidth(intro, 430),
 		gui.intro.pwRow,
 		bttnRow,
 	)
@@ -375,22 +353,22 @@ func (gui *GUI) showIntroView() {
 
 func (gui *GUI) initializeDownloadView() {
 
-	header := newEcoLabel("Downloading", &textStyle{
-		fontSize: 18,
+	header := ui.NewEcoLabel("Downloading", &ui.TextStyle{
+		FontSize: 18,
 	})
 
-	gui.download.progress = newEcoLabel("78.6%", &textStyle{
-		fontSize: 40,
-		bold:     true,
+	gui.download.progress = ui.NewEcoLabel("78.6%", &ui.TextStyle{
+		FontSize: 40,
+		Bold:     true,
 	})
 
-	gui.download.msg = newEcoLabel("starting download...", nil)
+	gui.download.msg = ui.NewEcoLabel("starting download...", nil)
 
-	downloadView := newElement(
-		&elementStyle{
-			spacing: 20,
-			padding: borderSpecs{20, 0, 20, 0},
-			align:   alignCenter,
+	downloadView := ui.NewElement(
+		&ui.Style{
+			Spacing: 20,
+			Padding: ui.FourSpec{20, 0, 20, 0},
+			Align:   ui.AlignCenter,
 		},
 		gui.logo,
 		header,
@@ -409,34 +387,34 @@ func (gui *GUI) showDownloadView() {
 func (gui *GUI) initializeHomeView() {
 	// A label describing the current sync state. Could do dcrd on left and
 	// dcrwallet on right.
-	gui.home.progress = newEcoLabel("syncing blockchain...", &textStyle{fontSize: 16})
+	gui.home.progress = ui.NewEcoLabel("syncing blockchain...", &ui.TextStyle{FontSize: 16})
 
-	makeAppLauncher := func(click func(*fyne.PointEvent), imgs ...fyne.CanvasObject) *Element {
-		return newElement(&elementStyle{
-			padding: borderSpecs{5, 10, 5, 10},
-			cursor:  desktop.PointerCursor,
-			display: displayInline,
-			listeners: eventListeners{
-				click: click,
+	makeAppLauncher := func(click func(*fyne.PointEvent), imgs ...fyne.CanvasObject) *ui.Element {
+		return ui.NewElement(&ui.Style{
+			Padding: ui.FourSpec{5, 10, 5, 10},
+			Cursor:  desktop.PointerCursor,
+			Display: ui.DisplayInline,
+			Listeners: ui.EventListeners{
+				Click: click,
 			},
 		},
 			imgs...,
 		)
 	}
 
-	newSpinnerBox := func() (*Element, *spinner) {
+	newSpinnerBox := func() (*ui.Element, *spinner) {
 		var zero int
-		spinner := newSpinner(gui.ctx, 7, 40, decredKeyBlue, decredGreen)
-		spinnerBox := newElement(&elementStyle{
-			position: positionAbsolute,
-			left:     &zero,
-			right:    &zero,
-			top:      &zero,
-			bottom:   &zero,
-			ori:      orientationHorizontal,
-			align:    alignMiddle,
-			justi:    justifyAround,
-			bgColor:  blockerColor,
+		spinner := newSpinner(gui.ctx, 7, 40, ui.DecredKeyBlue, ui.DecredGreen)
+		spinnerBox := ui.NewElement(&ui.Style{
+			Position: ui.PositionAbsolute,
+			Left:     &zero,
+			Right:    &zero,
+			Top:      &zero,
+			Bottom:   &zero,
+			Ori:      ui.OrientationHorizontal,
+			Align:    ui.AlignMiddle,
+			Justi:    ui.JustifyAround,
+			BgColor:  ui.BlockerColor,
 		},
 			spinner,
 		)
@@ -446,8 +424,8 @@ func (gui *GUI) initializeHomeView() {
 	}
 
 	// Decrediton
-	gui.decrediton.offImg = newSizedImage(decreditonBGPath, 0, 150)
-	gui.decrediton.onImg = newSizedImage(decreditonBGOnPath, 0, 150)
+	gui.decrediton.offImg = ui.NewSizedImage(decreditonBGPath, 0, 150)
+	gui.decrediton.onImg = ui.NewSizedImage(decreditonBGOnPath, 0, 150)
 	gui.decrediton.onImg.Hide()
 
 	gui.decrediton.launcher = makeAppLauncher(func(*fyne.PointEvent) {
@@ -467,8 +445,8 @@ func (gui *GUI) initializeHomeView() {
 	)
 
 	// DEX
-	gui.dex.offImg = newSizedImage(dexLauncherBGPath, 0, 150)
-	gui.dex.onImg = newSizedImage(dexLaunchedBGPath, 0, 150)
+	gui.dex.offImg = ui.NewSizedImage(dexLauncherBGPath, 0, 150)
+	gui.dex.onImg = ui.NewSizedImage(dexLaunchedBGPath, 0, 150)
 	gui.dex.onImg.Hide()
 	gui.dex.spinnerBox, gui.dex.spinner = newSpinnerBox()
 	gui.dex.launcher = makeAppLauncher(func(*fyne.PointEvent) {
@@ -494,17 +472,17 @@ func (gui *GUI) initializeHomeView() {
 	gui.dcrctl.launcher = makeAppLauncher(func(*fyne.PointEvent) {
 		gui.showDCRCtl()
 	},
-		newSizedImage(dcrctlLauncherBGPath, 0, 150),
+		ui.NewSizedImage(dcrctlLauncherBGPath, 0, 150),
 		gui.dcrctl.spinnerBox,
 	)
 
 	// A horizontal div (with wrapping?) holding image buttons to start various
 	// Decred services.
-	gui.home.appRow = newElement(&elementStyle{
-		ori:   orientationHorizontal,
-		justi: justifyAround,
-		align: alignCenter,
-		maxW:  1000,
+	gui.home.appRow = ui.NewElement(&ui.Style{
+		Ori:   ui.OrientationHorizontal,
+		Justi: ui.JustifyAround,
+		Align: ui.AlignCenter,
+		MaxW:  1000,
 	},
 		gui.decrediton.launcher,
 		gui.dex.launcher,
@@ -512,13 +490,13 @@ func (gui *GUI) initializeHomeView() {
 	)
 	gui.home.appRow.Hide()
 
-	gui.home.appRow.name = "appRow"
+	gui.home.appRow.Name = "appRow"
 
-	gui.home.box = newElement(
-		&elementStyle{
-			padding: borderSpecs{20, 0, 0, 0},
-			align:   alignCenter,
-			spacing: 20,
+	gui.home.box = ui.NewElement(
+		&ui.Style{
+			Padding: ui.FourSpec{20, 0, 0, 0},
+			Align:   ui.AlignCenter,
+			Spacing: 20,
 			// expandVertically: true,
 			// justi:            justifyStart,
 		},
@@ -526,7 +504,7 @@ func (gui *GUI) initializeHomeView() {
 		gui.home.progress,
 		gui.home.appRow,
 	)
-	gui.home.box.name = "homeBox"
+	gui.home.box.Name = "homeBox"
 }
 
 func (gui *GUI) showHomeView() {
@@ -542,36 +520,36 @@ func (gui *GUI) initializeDCRCtl() {
 	goHome := widget.NewLabel("back home")
 	goHome.Resize(goHome.MinSize())
 
-	var link *Element
-	link = newElement(&elementStyle{
-		padding: borderSpecs{-1, 5, -1, 5},
-		bgColor: inputColor,
-		cursor:  desktop.PointerCursor,
-		ori:     orientationHorizontal,
-		display: displayInline,
-		spacing: 5,
-		listeners: eventListeners{
-			click: func(ev *fyne.PointEvent) {
+	var link *ui.Element
+	link = ui.NewElement(&ui.Style{
+		Padding: ui.FourSpec{-1, 5, -1, 5},
+		BgColor: ui.InputColor,
+		Cursor:  desktop.PointerCursor,
+		Ori:     ui.OrientationHorizontal,
+		Display: ui.DisplayInline,
+		Spacing: 5,
+		Listeners: ui.EventListeners{
+			Click: func(ev *fyne.PointEvent) {
 				gui.showHomeView()
 			},
-			mouseIn: func(*desktop.MouseEvent) {
-				link.setBackgroundColor(defaultButtonColor)
+			MouseIn: func(*desktop.MouseEvent) {
+				link.SetBackgroundColor(ui.DefaultButtonColor)
 			},
-			mouseOut: func() {
-				link.setBackgroundColor(inputColor)
+			MouseOut: func() {
+				link.SetBackgroundColor(ui.InputColor)
 			},
 		},
 	}, larrow, goHome)
 
-	linkRow := newElement(&elementStyle{
-		align:   alignLeft,
-		display: displayInline,
-		minW:    750,
+	linkRow := ui.NewElement(&ui.Style{
+		Align:   ui.AlignLeft,
+		Display: ui.DisplayInline,
+		MinW:    750,
 	},
 		link,
 	)
 
-	var resultDiv *Element
+	var resultDiv *ui.Element
 	var results *betterEntry
 	input := &betterEntry{Entry: &widget.Entry{}, w: 750}
 	gui.dcrctl.input = input
@@ -606,33 +584,33 @@ func (gui *GUI) initializeDCRCtl() {
 	results.Wrapping = fyne.TextWrapWord
 	results.textStyle = fyne.TextStyle{Monospace: true}
 
-	resultDiv = newElement(&elementStyle{
-		bgColor:      inputColor,
-		padding:      borderSpecs{10, 10, 10, 10},
-		margins:      borderSpecs{1, 1, 20, 1},
-		borderRadius: 4,
-		borderWidth:  1,
-		borderColor:  stringToColor("#444"),
-		display:      displayInline,
-		minW:         730,
+	resultDiv = ui.NewElement(&ui.Style{
+		BgColor:      ui.InputColor,
+		Padding:      ui.FourSpec{10, 10, 10, 10},
+		Margins:      ui.FourSpec{1, 1, 20, 1},
+		BorderRadius: 4,
+		BorderWidth:  1,
+		BorderColor:  ui.StringToColor("#444"),
+		Display:      ui.DisplayInline,
+		MinW:         730,
 	},
 		gui.dcrctl.results,
 	)
 	resultDiv.Hide()
 
-	gui.dcrctl.view = newElement(
-		&elementStyle{
-			padding: borderSpecs{20, 0, 0, 0},
-			align:   alignCenter,
-			spacing: 15,
+	gui.dcrctl.view = ui.NewElement(
+		&ui.Style{
+			Padding: ui.FourSpec{20, 0, 0, 0},
+			Align:   ui.AlignCenter,
+			Spacing: 15,
 		},
 		gui.logo,
 		linkRow,
-		newElement(&elementStyle{
-			padding:      borderSpecs{10, 10, 10, 10},
-			bgColor:      inputColor,
-			borderRadius: 3,
-			maxW:         750,
+		ui.NewElement(&ui.Style{
+			Padding:      ui.FourSpec{10, 10, 10, 10},
+			BgColor:      ui.InputColor,
+			BorderRadius: 3,
+			MaxW:         750,
 		}, input),
 		resultDiv,
 	)
@@ -680,10 +658,10 @@ func (gui *GUI) dexState() *eco.ServiceStatus {
 
 func (gui *GUI) processDCRDSyncUpdate(u *eco.Progress) {
 	if u.Err != "" {
-		gui.home.progress.setText("dcrd sync error: %s", u.Err)
+		gui.home.progress.SetText("dcrd sync error: %s", u.Err)
 		return
 	}
-	gui.home.progress.setText("%s (%.0f%%)", u.Status, u.Progress*100)
+	gui.home.progress.SetText("%s (%.0f%%)", u.Status, u.Progress*100)
 	gui.home.progress.Refresh()
 	gui.home.box.Refresh()
 	canvas.Refresh(gui.home.box)
@@ -694,7 +672,7 @@ func (gui *GUI) initEco(syncMode eco.SyncMode) {
 	pw := gui.intro.pw.Text
 	ch, err := eco.Init(gui.ctx, pw, syncMode)
 	if err != nil {
-		gui.download.msg.setText("Error initalizing Eco: %v", err)
+		gui.download.msg.SetText("Error initalizing Eco: %v", err)
 		return
 	}
 	gui.showDownloadView()
@@ -702,15 +680,15 @@ func (gui *GUI) initEco(syncMode eco.SyncMode) {
 		select {
 		case u := <-ch:
 			if err != nil {
-				gui.download.msg.setText(err.Error())
+				gui.download.msg.SetText(err.Error())
 				return
 			}
 			if u.Err != "" {
-				gui.download.msg.setText(u.Err)
+				gui.download.msg.SetText(u.Err)
 				return
 			}
-			gui.download.msg.setText(u.Status)
-			gui.download.progress.setText("%.0f%%", u.Progress*100)
+			gui.download.msg.SetText(u.Status)
+			gui.download.progress.SetText("%.0f%%", u.Progress*100)
 			gui.download.box.Refresh()
 			canvas.Refresh(gui.download.box)
 			if u.Progress > 0.9999 {
@@ -802,7 +780,7 @@ type peekerRenderer struct {
 }
 
 func (r *peekerRenderer) BackgroundColor() color.Color {
-	return transparent
+	return ui.Transparent
 }
 
 // Destroy is for internal use.

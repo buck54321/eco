@@ -5,6 +5,7 @@ go 1.15
 require (
 	decred.org/dcrdex v0.1.2
 	decred.org/dcrwallet v1.6.0-rc3
+	fyne.io/fyne v1.4.2
 	github.com/decred/dcrd/certgen v1.1.1
 	github.com/decred/dcrd/chaincfg/v3 v3.0.0
 	github.com/decred/dcrd/dcrutil v1.4.0
@@ -19,6 +20,7 @@ require (
 	github.com/goki/ki v1.0.5
 	github.com/goki/mat32 v1.0.2
 	github.com/jrick/logrotate v1.0.0
+	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
 	go.etcd.io/bbolt v1.3.5
 	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
 	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b

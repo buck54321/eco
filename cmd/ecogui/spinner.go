@@ -9,6 +9,7 @@ import (
 
 	"fyne.io/fyne"
 	"fyne.io/fyne/canvas"
+	"github.com/buck54321/eco/ui"
 )
 
 type spinner struct {
@@ -32,7 +33,7 @@ type spinner struct {
 // supplied, they will be applied repeating-sequentially to the dots.
 func newSpinner(ctx context.Context, n, w int, colors ...color.Color) *spinner {
 	if len(colors) == 0 {
-		colors = []color.Color{white}
+		colors = []color.Color{ui.White}
 	}
 	nCol := len(colors)
 	dots := make([]fyne.CanvasObject, 0, n)
@@ -161,7 +162,7 @@ type spinnerRenderer struct {
 
 // BackgroundColor for the spinner is transparent.
 func (r *spinnerRenderer) BackgroundColor() color.Color {
-	return transparent
+	return ui.Transparent
 }
 
 // Destroy is for fyne internal use.

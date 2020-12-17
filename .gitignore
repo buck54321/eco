@@ -1,3 +1,6 @@
 cmd/ecogui/ecogui
 cmd/ecoservice/ecoservice
+cmd/installer/archive.go
+cmd/installer/ecoinstaller*
+cmd/installer/installer*
 

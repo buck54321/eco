@@ -8,6 +8,11 @@ import (
 	"os/signal"
 
 	"github.com/buck54321/eco"
+	"github.com/decred/slog"
+)
+
+var (
+	log slog.Logger
 )
 
 func main() {
@@ -20,7 +25,9 @@ func main() {
 		return
 	}
 
-	eco.InitLogging()
+	log = eco.InitLogging("ecoservice")
+	defer log.Infof("Quitting Decred Eco system service")
+
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 	killChan := make(chan os.Signal)

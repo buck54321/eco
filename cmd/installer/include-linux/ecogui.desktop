@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Decred Eco
+Exec=<Exec>
+Icon=<Icon>
+Terminal=false
+Comment=A Decred application manager
+Categories=Finance;Utility;

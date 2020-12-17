@@ -1,8 +1,0 @@
-[Unit]
-Description=Decred Eco system service
-
-[Service]
-ExecStart=/usr/local/bin/ecoservice
-
-[Install]
-WantedBy=multi-user.target

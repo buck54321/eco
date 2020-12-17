@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 
 	"github.com/buck54321/eco"
 	"github.com/decred/slog"
@@ -10,7 +9,7 @@ import (
 
 var (
 	ctx, cancel = context.WithCancel(context.Background())
-	log         = slog.NewBackend(os.Stdout).Logger("GUI")
+	log         slog.Logger
 )
 
 func main() {
@@ -20,7 +19,7 @@ func main() {
 	// 	<-killChan
 	// 	cancel()
 	// }()
-	eco.UseLogger(slog.NewBackend(os.Stdout).Logger("ECO"))
+	log = eco.InitLogging("ecogui")
 	gui := NewGUI(ctx)
 	gui.Run()
 }

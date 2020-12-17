@@ -7,6 +7,7 @@ import (
 	"fyne.io/fyne/canvas"
 	"fyne.io/fyne/driver/desktop"
 	"fyne.io/fyne/widget"
+	"github.com/buck54321/eco/ui"
 )
 
 type bttnOpts struct {
@@ -28,7 +29,7 @@ type ecoBttn struct {
 	click     func()
 }
 
-func newEcoBttn(opts *bttnOpts, text string, click func(*fyne.PointEvent)) *Element {
+func newEcoBttn(opts *bttnOpts, text string, click func(*fyne.PointEvent)) *ui.Element {
 	if opts == nil {
 		opts = &bttnOpts{}
 	}
@@ -40,39 +41,39 @@ func newEcoBttn(opts *bttnOpts, text string, click func(*fyne.PointEvent)) *Elem
 	}
 	clr := opts.bgColor
 	if clr == nil {
-		clr = defaultButtonColor
+		clr = ui.DefaultButtonColor
 	}
 	hoverClr := opts.hoverColor
 	if hoverClr == nil {
-		hoverClr = defaultButtonHoverColor
+		hoverClr = ui.DefaultButtonHoverColor
 	}
 	fontSize := nonzero(opts.fontSize, 14)
 	px := nonzero(opts.paddingX, 20)
 	py := nonzero(opts.paddingY, 10)
 
 	// Prepare text.
-	txt := canvas.NewText(text, textColor)
+	txt := canvas.NewText(text, ui.TextColor)
 	txt.TextSize = fontSize
 	txt.TextStyle.Bold = true
 	txt.Resize(txt.MinSize())
 	// txtBox := txt.MinSize()
 	// txt.Move(fyne.NewPos(paddingX+borderWidth, paddingY+borderWidth))
 
-	var bttn *Element
-	bttn = newElement(&elementStyle{
-		bgColor:      clr,
-		padding:      borderSpecs{py, px, py, px},
-		borderWidth:  1,
-		borderRadius: 2,
-		cursor:       desktop.PointerCursor,
-		display:      displayInline,
-		listeners: eventListeners{
-			click: click,
-			mouseIn: func(*desktop.MouseEvent) {
-				bttn.setBackgroundColor(hoverClr)
+	var bttn *ui.Element
+	bttn = ui.NewElement(&ui.Style{
+		BgColor:      clr,
+		Padding:      ui.FourSpec{py, px, py, px},
+		BorderWidth:  1,
+		BorderRadius: 2,
+		Cursor:       desktop.PointerCursor,
+		Display:      ui.DisplayInline,
+		Listeners: ui.EventListeners{
+			Click: click,
+			MouseIn: func(*desktop.MouseEvent) {
+				bttn.SetBackgroundColor(hoverClr)
 			},
-			mouseOut: func() {
-				bttn.setBackgroundColor(clr)
+			MouseOut: func() {
+				bttn.SetBackgroundColor(clr)
 			},
 		},
 	},

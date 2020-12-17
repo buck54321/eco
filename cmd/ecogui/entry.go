@@ -7,6 +7,7 @@ import (
 	"fyne.io/fyne"
 	"fyne.io/fyne/canvas"
 	"fyne.io/fyne/widget"
+	"github.com/buck54321/eco/ui"
 )
 
 type betterEntryRenderer struct {
@@ -56,9 +57,9 @@ func (r *betterEntryRenderer) Objects() []fyne.CanvasObject {
 				if r.be.readOnly {
 					removeBaseObject(i)
 				} else {
-					cursor.FillColor = cursorColor
+					cursor.FillColor = ui.CursorColor
 					sz := cursor.Size()
-					cursor.Resize(fyne.NewSize(sz.Width, sz.Height-(&defaultTheme{}).Padding()))
+					cursor.Resize(fyne.NewSize(sz.Width, sz.Height-(&ui.DefaultTheme{}).Padding()))
 				}
 			}
 		}
@@ -84,7 +85,7 @@ func (r *betterEntryRenderer) Objects() []fyne.CanvasObject {
 }
 
 func (r *betterEntryRenderer) BackgroundColor() color.Color {
-	return transparent
+	return ui.Transparent
 }
 
 type betterEntry struct {

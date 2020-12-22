@@ -10,7 +10,7 @@ replace (
 
 require (
 	fyne.io/fyne v1.4.2
-	github.com/buck54321/eco v0.0.0-20201207140308-580c96d49dac
+	github.com/buck54321/eco v0.0.0-20201217155655-7333851307d4
 	github.com/buck54321/eco/ui v0.0.0-00010101000000-000000000000
 	github.com/decred/slog v1.1.0
 	github.com/disintegration/imaging v1.6.2

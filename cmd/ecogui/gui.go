@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"io/ioutil"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +16,6 @@ import (
 	"fyne.io/fyne"
 	"fyne.io/fyne/app"
 	"fyne.io/fyne/canvas"
-	"fyne.io/fyne/container"
 	"fyne.io/fyne/driver/desktop"
 	"fyne.io/fyne/widget"
 	"github.com/buck54321/eco"
@@ -28,32 +30,38 @@ var (
 	logoRsrc, decreditonBGPath, decreditonBGOnPath, dexLauncherBGPath,
 	dexLaunchedBGPath, dcrctlLauncherBGPath, leftArrow, windowLogo, fontRegular,
 	fontBold *fyne.StaticResource
+	staticRoot = filepath.Join(eco.EcoDir, "static")
 )
 
 func init() {
 	// If we're running from the repo cmd/ecogui directory, use the repo static
 	if _, err := os.Stat("static"); err == nil {
-		ui.StaticRoot = "static"
+		staticRoot = "static"
 	}
-	logoRsrc = ui.MustLoadStaticResource("eco-logo.png")
-	decreditonBGPath = ui.MustLoadStaticResource("decrediton-launcher.png")
-	decreditonBGOnPath = ui.MustLoadStaticResource("decrediton-launched.png")
-	dexLauncherBGPath = ui.MustLoadStaticResource("dex-launcher.png")
-	dexLaunchedBGPath = ui.MustLoadStaticResource("dex-launched.png")
-	dcrctlLauncherBGPath = ui.MustLoadStaticResource("dcrctl-plus.png")
-	leftArrow = ui.MustLoadStaticResource("larrow.svg")
-	windowLogo = ui.MustLoadStaticResource("dcr-logo.png")
-	// fontRegular = ui.MustLoadStaticResource("SourceSans3-Regular.ttf")
-	// fontBold = ui.MustLoadStaticResource("source-sans-pro-semibold.ttf")
+	logoRsrc = loadStatic("eco-logo.png")
+	decreditonBGPath = loadStatic("decrediton-launcher.png")
+	decreditonBGOnPath = loadStatic("decrediton-launched.png")
+	dexLauncherBGPath = loadStatic("dex-launcher.png")
+	dexLaunchedBGPath = loadStatic("dex-launched.png")
+	dcrctlLauncherBGPath = loadStatic("dcrctl-plus.png")
+	leftArrow = loadStatic("larrow.svg")
+	windowLogo = loadStatic("dcr-logo.png")
+	// fontRegular = loadStatic("SourceSans3-Regular.ttf")
+	// fontBold = loadStatic("source-sans-pro-semibold.ttf")
+}
+
+func loadStatic(rsc string) *fyne.StaticResource {
+	return ui.MustLoadStaticResource(filepath.Join(staticRoot, rsc))
 }
 
 type GUI struct {
 	ctx      context.Context
+	quit     context.CancelFunc
 	app      fyne.App
 	window   fyne.Window
-	mainView *widget.ScrollContainer
 	driver   fyne.Driver // gui.driver.StartAnimation(fyne.Animation)
 	logo     *canvas.Image
+	mainView *ui.Element
 
 	// Eco state data.
 	stateMtx         sync.RWMutex
@@ -77,9 +85,17 @@ type GUI struct {
 
 	// Home page
 	home struct {
-		box      *ui.Element
-		progress *ui.EcoLabel
-		appRow   *ui.Element
+		box          *ui.Element
+		dcrdProgress *ui.EcoLabel
+		dcrwProgress *ui.EcoLabel
+		appRow       *ui.Element
+		xcRate       *ui.EcoLabel
+		xcDatum      *ui.Element
+		stakeDiff    *ui.EcoLabel
+		sdDatum      *ui.Element
+		hashRate     *ui.EcoLabel
+		hrDatum      *ui.Element
+		stats        *ui.Element
 	}
 
 	// Apps
@@ -114,10 +130,16 @@ func NewGUI(ctx context.Context) *GUI {
 	w.SetIcon(windowLogo)
 	w.Resize(fyne.NewSize(1024, 768))
 
-	mainView := container.NewVScroll(container.NewVBox(container.NewCenter()))
+	mainView := ui.NewElement(&ui.Style{
+		Align: ui.AlignCenter,
+	})
+	w.SetContent(mainView)
+
+	ctx, cancel := context.WithCancel(ctx)
 
 	gui := &GUI{
 		ctx:      ctx,
+		quit:     cancel,
 		app:      a,
 		driver:   a.Driver(),
 		window:   w,
@@ -151,7 +173,7 @@ func (gui *GUI) Run() {
 			if err == nil {
 				break
 			}
-			gui.home.progress.SetText("Unable to retrieve Eco state: %v", err)
+			gui.home.dcrdProgress.SetText("Unable to retrieve Eco state: %v", err)
 			select {
 			case <-time.After(time.Second * 5):
 			case <-ctx.Done():
@@ -160,12 +182,8 @@ func (gui *GUI) Run() {
 		}
 		gui.storeEcoState(&state.Eco)
 
-		fmt.Println("--eco state", dirtyEncode(state))
-
 		st := state.Services["dcrd"]
 		dcrdLoading := st == nil
-
-		fmt.Println("--dcrLoading", dcrdLoading)
 
 		if !dcrdLoading {
 			gui.home.appRow.Show()
@@ -177,10 +195,6 @@ func (gui *GUI) Run() {
 			gui.dcrctl.spinnerBox.Show()
 			gui.dcrctl.spinner.Show()
 		}
-
-		fmt.Println("--walletSyncing", walletSyncing)
-
-		fmt.Println("--SyncMode full", state.Eco.SyncMode == eco.SyncModeFull)
 
 		var dexLoading bool
 		if state.Eco.SyncMode == eco.SyncModeFull {
@@ -205,19 +219,19 @@ func (gui *GUI) Run() {
 
 		eco.Feed(gui.ctx, &eco.EcoFeeders{
 			SyncStatus: func(u *eco.Progress) {
-
-				fmt.Println("--SyncStatus", dirtyEncode(u))
-
-				if walletSyncing && u.Service == "dcrwallet" && u.Progress > 0.999 {
-					walletSyncing = false
-					gui.dcrctl.spinnerBox.Hide()
-					gui.dcrctl.spinner.Hide()
-					canvas.Refresh(gui.dcrctl.launcher)
-					gui.dex.spinnerBox.Hide()
-					gui.dex.spinner.Hide()
-					canvas.Refresh(gui.dex.launcher)
-				}
-				if u.Service == "dcrd" {
+				switch u.Service {
+				case "dcrwallet":
+					if walletSyncing && u.Progress > 0.999 {
+						walletSyncing = false
+						gui.dcrctl.spinnerBox.Hide()
+						gui.dcrctl.spinner.Hide()
+						canvas.Refresh(gui.dcrctl.launcher)
+						gui.dex.spinnerBox.Hide()
+						gui.dex.spinner.Hide()
+						canvas.Refresh(gui.dex.launcher)
+					}
+					gui.processDCRWalletSyncUpdate(u)
+				case "dcrd":
 					if dcrdLoading {
 						dcrdLoading = false
 						gui.home.appRow.Show()
@@ -272,6 +286,77 @@ func (gui *GUI) Run() {
 		// gui.showHomeView()
 	}()
 
+	// Run a loop to query dcrdata and update stats.
+	go func() {
+		// This routine should be run in a loop, or even better, the exchange
+		// rate should be monitored by websocket, and the others updated in a
+		// loop.
+
+		// xcRate
+		// stakeDiff
+		// hashRate
+
+		time.Sleep(250 * time.Millisecond)
+
+		stakeDiffResp := &struct {
+			Current float64 `json:"current"`
+			Next    float64 `json:"next"`
+		}{}
+		resp, err := eco.DCRCtl(gui.ctx, "getstakedifficulty")
+		if err != nil {
+			log.Errorf("getstakedifficulty error: %v", err)
+		} else {
+			err := json.Unmarshal([]byte(resp), stakeDiffResp)
+			if err != nil {
+				log.Errorf("error decoding stakedifficulty response: %v", err)
+			} else {
+				gui.home.stakeDiff.SetText("%.2f", stakeDiffResp.Current)
+				gui.home.sdDatum.Refresh()
+				canvas.Refresh(gui.home.stats)
+			}
+		}
+
+		var hps uint64
+		resp, err = eco.DCRCtl(gui.ctx, "getnetworkhashps")
+		if err != nil {
+			log.Errorf("getnetworkhashps error: %v", err)
+		} else {
+			err := json.Unmarshal([]byte(resp), &hps)
+			if err != nil {
+				log.Errorf("error decoding getnetworkhashps response: %v", err)
+			} else {
+				gui.home.hashRate.SetText("%.2f", float64(hps)/1e15)
+				gui.home.hrDatum.Refresh()
+				canvas.Refresh(gui.home.stats)
+			}
+		}
+
+		xcResp := &struct {
+			Price float64 `json:"price"`
+			// lots of other info in this response if desired
+		}{}
+		res, err := http.Get("https://explorer.dcrdata.org/api/exchanges")
+		if err != nil {
+			log.Errorf("error fetching dcrdata exchange data: %v", err)
+		} else {
+			b, err := ioutil.ReadAll(res.Body)
+			res.Body.Close()
+			if err != nil {
+				log.Errorf("error reading exchanges response body: %v", err)
+			} else {
+				err := json.Unmarshal(b, xcResp)
+				if err != nil {
+					log.Errorf("error decoding exchanges response: %v", err)
+				} else {
+					gui.home.xcRate.SetText("%.2f", float64(xcResp.Price))
+					gui.home.xcDatum.Refresh()
+					canvas.Refresh(gui.home.stats)
+				}
+			}
+		}
+
+	}()
+
 	// go func() {
 	// 	ticker := time.NewTicker(time.Second)
 	// 	for {
@@ -288,11 +373,15 @@ func (gui *GUI) Run() {
 	// }()
 
 	gui.window.ShowAndRun()
+	gui.quit()
 	wg.Wait()
 }
 
 func (gui *GUI) setView(wgt fyne.CanvasObject) {
-	gui.window.SetContent(container.NewVScroll(wgt))
+	gui.mainView.RemoveChildByIndex(0)
+	gui.mainView.InsertChild(wgt, 0)
+	gui.mainView.Refresh()
+	canvas.Refresh(gui.mainView)
 }
 
 func (gui *GUI) initializeIntroView() {
@@ -387,7 +476,51 @@ func (gui *GUI) showDownloadView() {
 func (gui *GUI) initializeHomeView() {
 	// A label describing the current sync state. Could do dcrd on left and
 	// dcrwallet on right.
-	gui.home.progress = ui.NewEcoLabel("syncing blockchain...", &ui.TextStyle{FontSize: 16})
+
+	gui.home.dcrdProgress = ui.NewEcoLabel("syncing blockchain...", &ui.TextStyle{FontSize: 15})
+	gui.home.dcrwProgress = ui.NewEcoLabel("syncing wallet...", &ui.TextStyle{FontSize: 15})
+
+	newDatum := func(title string, titleSize int, el fyne.CanvasObject) *ui.Element {
+		titleLbl := ui.NewElement(&ui.Style{
+			Display:  ui.DisplayInline,
+			Position: ui.PositionAbsolute,
+			Left:     intptr(5),
+			Top:      intptr(-13),
+			BgColor:  ui.BgColor,
+			Padding:  ui.FourSpec{0, 3, 0, 3},
+		},
+			ui.NewEcoLabel(title, &ui.TextStyle{FontSize: titleSize, Bold: true}),
+		)
+		datum := ui.NewElement(&ui.Style{
+			Display:      ui.DisplayInline,
+			BorderWidth:  1,
+			BorderRadius: 3,
+			BgColor:      ui.BgColor,
+			Padding:      ui.FourSpec{10, 20, 10, 20},
+			Margins:      ui.FourSpec{5, 5, 5, 5},
+		},
+			titleLbl,
+			el,
+		)
+
+		// datum.Name = "datum"
+		return datum
+	}
+
+	dcrdDatum := newDatum("dcrd", 15, gui.home.dcrdProgress)
+	dcrdDatum.Style.MinW = "33%"
+
+	dcrwDatum := newDatum("dcrwallet", 15, gui.home.dcrwProgress)
+	dcrwDatum.Style.MinW = "33%"
+
+	progressRow := ui.NewElement(&ui.Style{
+		Ori:     ui.OrientationHorizontal,
+		Justi:   ui.JustifyBetween,
+		Margins: ui.FourSpec{10, 0, 5, 0},
+	},
+		dcrdDatum,
+		dcrwDatum,
+	)
 
 	makeAppLauncher := func(click func(*fyne.PointEvent), imgs ...fyne.CanvasObject) *ui.Element {
 		return ui.NewElement(&ui.Style{
@@ -480,9 +613,8 @@ func (gui *GUI) initializeHomeView() {
 	// Decred services.
 	gui.home.appRow = ui.NewElement(&ui.Style{
 		Ori:   ui.OrientationHorizontal,
-		Justi: ui.JustifyAround,
+		Justi: ui.JustifyBetween,
 		Align: ui.AlignCenter,
-		MaxW:  1000,
 	},
 		gui.decrediton.launcher,
 		gui.dex.launcher,
@@ -490,21 +622,78 @@ func (gui *GUI) initializeHomeView() {
 	)
 	gui.home.appRow.Hide()
 
-	gui.home.appRow.Name = "appRow"
+	// gui.home.appRow.Name = "appRow"
+
+	sectionHeader := func(s string) *ui.Element {
+		return ui.NewElement(&ui.Style{
+			Ori: ui.OrientationHorizontal,
+		},
+			ui.NewEcoLabel(s, &ui.TextStyle{FontSize: 18, Bold: true}),
+		)
+	}
+
+	valueWithUnit := func(val fyne.CanvasObject, unit string) *ui.Element {
+		return ui.NewElement(&ui.Style{
+			Ori:     ui.OrientationHorizontal,
+			Display: ui.DisplayInline,
+			Spacing: 5,
+			// Would be nice to do AlignBaseline, but it seems fyne.MeasureText
+			// -> (*canvas.Text).Size() returns a measurement that is based on
+			// the font family rather than the actual text being displayed, so
+			// the text can have some vertical padding, making alignment.
+			// Next best choice is AlignMiddle, which is the default.
+			// difficult.
+			// Align:   ui.AlignBaseline,
+		},
+			val,
+			ui.NewEcoLabel(unit, &ui.TextStyle{FontSize: 12, Bold: true, Color: ui.StringToColor("#777")}),
+		)
+	}
+
+	datumStyle := &ui.TextStyle{FontSize: 17}
+
+	gui.home.xcRate = ui.NewEcoLabel("...", datumStyle)
+	gui.home.xcDatum = newDatum("Exchange Rate", 13, valueWithUnit(gui.home.xcRate, "USD"))
+
+	gui.home.stakeDiff = ui.NewEcoLabel("...", datumStyle)
+	gui.home.sdDatum = newDatum("Ticket Price", 13, valueWithUnit(gui.home.stakeDiff, "DCR"))
+
+	gui.home.hashRate = ui.NewEcoLabel("...", datumStyle)
+	gui.home.hrDatum = newDatum("Hashrate", 13, valueWithUnit(gui.home.hashRate, "Ph/s"))
+
+	gui.home.stats = ui.NewElement(&ui.Style{
+		Ori:     ui.OrientationHorizontal,
+		Justi:   ui.JustifyStart,
+		Spacing: 20,
+		Margins: ui.FourSpec{10, 0, 10, 0},
+	},
+		gui.home.xcDatum, gui.home.sdDatum, gui.home.hrDatum,
+	)
+
+	// topHR := ui.NewHorizontalRule(1, ui.DefaultBorderColor, 5)
+	// topHR.Style.Margins[0] = 20
 
 	gui.home.box = ui.NewElement(
 		&ui.Style{
 			Padding: ui.FourSpec{20, 0, 0, 0},
 			Align:   ui.AlignCenter,
-			Spacing: 20,
+			Spacing: 5,
+			MaxW:    900,
 			// expandVertically: true,
 			// justi:            justifyStart,
 		},
 		gui.logo,
-		gui.home.progress,
+		// topHR,
+		sectionHeader("Stats"),
+		gui.home.stats,
+		ui.NewHorizontalRule(1, ui.DefaultBorderColor, 5),
+		sectionHeader("Apps"),
 		gui.home.appRow,
+		ui.NewHorizontalRule(1, ui.DefaultBorderColor, 5),
+		sectionHeader("Sync"),
+		progressRow,
 	)
-	gui.home.box.Name = "homeBox"
+	// gui.home.box.Name = "homeBox"
 }
 
 func (gui *GUI) showHomeView() {
@@ -560,9 +749,9 @@ func (gui *GUI) initializeDCRCtl() {
 		if input.Text == "" {
 			return
 		}
-		res, err := eco.DCRCtl(gui.ctx, strings.TrimSpace(input.Text))
+		resp, err := eco.DCRCtl(gui.ctx, strings.TrimSpace(input.Text))
 		if err == nil {
-			gui.dcrctl.results.SetText(fmt.Sprintf("result for %q:\n%s", input.Text, res))
+			gui.dcrctl.results.SetText(fmt.Sprintf("result for %q:\n%s", input.Text, resp))
 			input.SetText("")
 		} else {
 			gui.dcrctl.results.SetText(fmt.Sprintf("request error: %v", err))
@@ -657,14 +846,22 @@ func (gui *GUI) dexState() *eco.ServiceStatus {
 }
 
 func (gui *GUI) processDCRDSyncUpdate(u *eco.Progress) {
+	gui.updateSyncLabel(gui.home.dcrdProgress, u)
+}
+
+func (gui *GUI) processDCRWalletSyncUpdate(u *eco.Progress) {
+	gui.updateSyncLabel(gui.home.dcrwProgress, u)
+}
+
+func (gui *GUI) updateSyncLabel(lbl *ui.EcoLabel, u *eco.Progress) {
 	if u.Err != "" {
-		gui.home.progress.SetText("dcrd sync error: %s", u.Err)
+		lbl.SetText("sync error: %s", u.Err)
 		return
 	}
-	gui.home.progress.SetText("%s (%.0f%%)", u.Status, u.Progress*100)
-	gui.home.progress.Refresh()
+	lbl.SetText("%s (%.0f%%)", u.Status, u.Progress*100)
+	lbl.Refresh()
 	gui.home.box.Refresh()
-	canvas.Refresh(gui.home.box)
+	canvas.Refresh(lbl)
 }
 
 // initEco should be run in a goroutine.
@@ -811,4 +1008,8 @@ func (r *peekerRenderer) Refresh() {
 func dirtyEncode(thing interface{}) string {
 	b, _ := json.Marshal(thing)
 	return string(b)
+}
+
+func intptr(i int) *int {
+	return &i
 }

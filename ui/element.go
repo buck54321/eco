@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"image/color"
+	"strconv"
+	"strings"
 
 	"fyne.io/fyne"
 	"fyne.io/fyne/canvas"
@@ -20,11 +22,16 @@ const (
 type Alignment uint8
 
 const (
-	// Horizontal alignments. left typically chosen when outside of valid range.
+	// Vertical orientation. AlignLeft is both default and fallback for invalid
+	// values.
+
 	AlignLeft Alignment = iota
 	AlignCenter
 	AlignRight
-	// Vertical alignments. middle typically chosen when outside of valid range.
+
+	// Horizontal orientation. AlignMiddle is chosen when zero value or
+	// otherwise invalid value is encountered.
+
 	AlignTop
 	AlignMiddle
 	AlignBaseline
@@ -63,29 +70,35 @@ const (
 )
 
 type Style struct {
-	MinW, MaxW, MinH, MaxH, Width, Height int
-	BorderRadius, BorderWidth             int
-	Padding                               FourSpec // top, right, bottom, left
-	Margins                               FourSpec // top, right, bottom, left
-	BgColor                               color.Color
-	BorderColor                           color.Color
-	Ori                                   Orientation
-	Justi                                 Justification
-	Align                                 Alignment
-	Listeners                             EventListeners
-	Cursor                                desktop.Cursor
-	Display                               Display
-	Position                              Position
-	// scroll                                elementScroll
+	MinW, MaxW, MinH, MaxH, Width, Height interface{} // string percentage or integer pixels
+	// BorderRadius and BorderWidth control the appearance of the border.
+	// A zero BorderWidth indicates that no border should be drawn.
+	// IMPORTANT: Due to limitations in our border drawing technique, Elements
+	// with borders should always assign an opaque BgColor, so transparency must
+	// be faked. This could be solved if fyne either 1) implements arbitrary
+	// arc primitives, or 2) somehow enables a subtractive blend mode.
+	BorderRadius, BorderWidth int
+	Padding                   FourSpec // top, right, bottom, left
+	Margins                   FourSpec // top, right, bottom, left
+	BgColor                   color.Color
+	BorderColor               color.Color
+	Ori                       Orientation
+	Justi                     Justification
+	Align                     Alignment
+	Listeners                 EventListeners
+	Cursor                    desktop.Cursor
+	Display                   Display
+	Position                  Position
 	// spacing doesn't really have an analogue in web layout, but it does in
 	// other systems like Qt.  spacing only applies along the orientation
 	// direction, and adds additional space between child elements.
 	Spacing int
-	// These positioning instructions can take precedence over the width and
-	// height fields, which is the opposite sense of CSS. e.g. if you put a
-	// width = 10, left = 0, right = 0 element inside of an element with
-	// width = 100, the nested element will end up with width 100, not 10, since
-	// we prioritize the left/right pair over the hard-coded width.
+	// For absolutely positioned elements, these positioning instructions can
+	// take precedence over the width and height fields, which is the opposite
+	// sense of CSS. e.g. if you put a width = 10, left = 0, right = 0 element
+	// inside of an element with width = 100, the nested element will end up
+	// with width 100, not 10, since we prioritize the left/right pair over the
+	// hard-coded width. TODO: Use these for relative positioning too.
 	Left, Right, Top, Bottom *int
 	// expandVertically should be used with caution. In particular, it will
 	// probably not behave as desired when part of a column layout. It's really
@@ -94,14 +107,34 @@ type Style struct {
 	ExpandVertically bool
 }
 
+func ParseChildDim(v interface{}, parentDim int) (int, error) {
+	switch vt := v.(type) {
+	case int:
+		return vt, nil
+	case string:
+		if !strings.HasSuffix(vt, "%") {
+			return 0, fmt.Errorf("ParseStyleDim cannot parse %q", vt)
+		}
+		vf, err := strconv.ParseFloat(strings.TrimSuffix(vt, "%"), 64)
+		if err != nil {
+			return 0, fmt.Errorf("ParseStyleDim -> ParseFloat cannot parse number from %q", vt)
+		}
+		// Truncating
+		return int(vf / 100 * float64(parentDim)), nil
+	}
+	return 0, fmt.Errorf("Unknown type (%T) for ParseStyleDim", v)
+}
+
 // A Element is a widget used to hold another element or elements, and adds
 // fully adjustable padding, margins, background-color,
 // border width, border radius, border color, and fine-grained control over
 // layout.
 type Element struct {
 	fyne.Container
-	Style          *Style
-	lyt            *elementLayout
+	Style      *Style
+	parsedDims struct {
+		width, maxW, minW, height, maxH, minH int
+	}
 	kids           []fyne.CanvasObject
 	obs            []fyne.CanvasObject
 	size           fyne.Size
@@ -113,6 +146,9 @@ type Element struct {
 }
 
 func NewElement(st *Style, kids ...fyne.CanvasObject) *Element {
+	if st == nil {
+		st = &Style{}
+	}
 	if st.BorderColor == nil {
 		st.BorderColor = DefaultBorderColor
 	}
@@ -128,9 +164,9 @@ func NewElement(st *Style, kids ...fyne.CanvasObject) *Element {
 		Style: st,
 		kids:  kids,
 	}
-	el.lyt = &elementLayout{
-		el: el,
-	}
+	// el.lyt = &elementLayout{
+	// 	el: el,
+	// }
 	el.Refresh()
 	return el
 }
@@ -147,9 +183,41 @@ func (b *Element) InsertChild(o fyne.CanvasObject, idx int) {
 	canvas.Refresh(b)
 }
 
+func (b *Element) RemoveChildByIndex(idx int) bool {
+	if idx < 0 || idx >= len(b.kids) {
+		return false
+	}
+	copy(b.kids[idx:], b.kids[idx+1:])
+	b.kids = b.kids[:len(b.kids)-1]
+	b.Refresh()
+	canvas.Refresh(b)
+	return true
+}
+
 // MinSize returns the minimum size this object needs to be drawn.
 func (b *Element) MinSize() fyne.Size {
 	return b.minSize
+}
+
+func (b *Element) parseDims(parentSize fyne.Size) {
+	parseDim := func(v interface{}, dim int) int {
+		if v == nil {
+			return 0
+		}
+		vi, err := ParseChildDim(v, dim)
+		if err != nil {
+			fmt.Println(err.Error())
+			return 1
+		}
+		return vi
+	}
+	st := b.Style
+	b.parsedDims.width = parseDim(st.Width, parentSize.Width)
+	b.parsedDims.minW = parseDim(st.MinW, parentSize.Width)
+	b.parsedDims.maxW = parseDim(st.MaxW, parentSize.Width)
+	b.parsedDims.height = parseDim(st.Height, parentSize.Height)
+	b.parsedDims.minH = parseDim(st.MinH, parentSize.Height)
+	b.parsedDims.maxH = parseDim(st.MaxH, parentSize.Height)
 }
 
 // Resize resizes this object to the given size.
@@ -159,24 +227,23 @@ func (b *Element) Resize(sz fyne.Size) {
 		return
 	}
 
-	if b.Name == "homeBox" || b.Name == "appRow" {
-		fmt.Printf("--Element.Resize for %s: %v \n", b.Name, sz)
-	}
+	b.parseDims(sz)
 
 	b.size = sz
 	b.claimed = b.minSize
 	st := b.Style
+	dims := &b.parsedDims
 	if st.Position == PositionAbsolute {
 		b.claimed = sz
 	} else if st.Display == DisplayBlock {
 		// block Element is greedy in x.
 		b.claimed.Width = sz.Width
-		if st.Width != 0 {
-			b.claimed.Width = st.Width
-		} else if b.claimed.Width < st.MinW {
-			b.claimed.Width = st.MinW
-		} else if st.MaxW != 0 && b.claimed.Width > st.MaxW {
-			b.claimed.Width = st.MaxW
+		if dims.width != 0 {
+			b.claimed.Width = dims.width
+		} else if b.claimed.Width < dims.minW {
+			b.claimed.Width = dims.minW
+		} else if dims.maxW != 0 && b.claimed.Width > dims.maxW {
+			b.claimed.Width = dims.maxW
 		}
 	}
 	if st.ExpandVertically {
@@ -219,12 +286,17 @@ func (b *Element) Refresh() {
 	}
 
 	st := b.Style
+	dims := &b.parsedDims
 	pt, pr, pb, pl := st.Padding[0], st.Padding[1], st.Padding[2], st.Padding[3]
 	mt, mr, mb, ml := st.Margins[0], st.Margins[1], st.Margins[2], st.Margins[3]
 	bw := st.BorderWidth
-	kidSize := b.lyt.MinSize(b.kids)
+	kidSize := b.kidMinSize(b.kids)
 	minW := kidSize.Width + pl + pr + ml + mr + 2*bw
 	minH := kidSize.Height + pt + pb + mt + mb + 2*bw
+
+	if b.Name == "hr" {
+		fmt.Println("--Element.Refresh", minW, minH)
+	}
 
 	b.minSize = fyne.NewSize(minW, minH)
 
@@ -241,12 +313,13 @@ func (b *Element) Refresh() {
 	}
 
 	b.claimed.Height = b.minSize.Height
-	if st.Height != 0 {
-		b.claimed.Height = st.Height
-	} else if st.MinH != 0 && b.claimed.Height < st.MinH {
-		b.claimed.Height = st.MinH
-	} else if st.MaxH != 0 && b.claimed.Height > st.MaxH {
-		b.claimed.Height = st.MaxH
+	ySpace := mt + mb + 2*bw
+	if dims.height != 0 {
+		b.claimed.Height = dims.height + ySpace
+	} else if dims.minH != 0 && b.claimed.Height < dims.minH {
+		b.claimed.Height = dims.minH + ySpace
+	} else if dims.maxH != 0 && b.claimed.Height > dims.maxH {
+		b.claimed.Height = dims.maxH + ySpace
 	}
 }
 
@@ -299,21 +372,21 @@ func (b *Element) SetBackgroundColor(c color.Color) {
 	}
 }
 
-type elementLayout struct {
-	el *Element
-}
+// type elementLayout struct {
+// 	el *Element
+// }
 
-func (lyt *elementLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	st := lyt.el.Style
-	if st.Width != 0 && st.Height != 0 {
-		return fyne.NewSize(st.Width, st.Height)
+func (b *Element) kidMinSize(objects []fyne.CanvasObject) fyne.Size {
+	dims := &b.parsedDims
+	if dims.width != 0 && dims.height != 0 {
+		return fyne.NewSize(dims.width, dims.height)
 	}
-	minW, minH := st.MinW, st.MinH
-	maxW, maxH := st.MaxW, st.MaxH
-	w, h := lyt.actualMinSize(objects)
+	minW, minH := dims.minW, dims.minH
+	maxW, maxH := dims.maxW, dims.maxH
+	w, h := b.actualMinSize(objects)
 
-	if st.Width != 0 {
-		w = st.Width
+	if dims.width != 0 {
+		w = dims.width
 	} else {
 		if minW != 0 && w < minW {
 			w = minW
@@ -322,8 +395,8 @@ func (lyt *elementLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 			w = maxW
 		}
 	}
-	if st.Height != 0 {
-		h = st.Height
+	if dims.height != 0 {
+		h = dims.height
 	} else {
 		if minH != 0 && h < minH {
 			h = minH
@@ -335,31 +408,31 @@ func (lyt *elementLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(w, h)
 }
 
-func (lyt *elementLayout) actualMinSize(objects []fyne.CanvasObject) (w, h int) {
-	if lyt.el.Style.Ori == OrientationVertical {
-		return lyt.minSizeColumn(objects)
+func (b *Element) actualMinSize(objects []fyne.CanvasObject) (w, h int) {
+	if b.Style.Ori == OrientationVertical {
+		return b.minSizeColumn(objects)
 	}
-	w, h = lyt.minSizeRow(objects)
+	w, h = b.minSizeRow(objects)
 	return w, h
 }
 
-func (lyt *elementLayout) Layout(objects []fyne.CanvasObject, containerSize fyne.Size) {
+func (b *Element) Layout(objects []fyne.CanvasObject, containerSize fyne.Size) {
 	n := len(objects)
 	if n == 0 {
 		return
 	}
 
-	minW, minH := lyt.actualMinSize(objects)
-	st := lyt.el.Style
+	minW, minH := b.actualMinSize(objects)
+	st := b.Style
 	if st.Ori == OrientationHorizontal {
-		lyt.layoutRow(objects, minW)
+		b.layoutRow(objects, minW)
 		return
 	}
 
-	lyt.layoutColumn(objects, minH)
+	b.layoutColumn(objects, minH)
 }
 
-func (lyt *elementLayout) minSizeRow(objects []fyne.CanvasObject) (w, h int) {
+func (b *Element) minSizeRow(objects []fyne.CanvasObject) (w, h int) {
 	var spacing int
 	for _, o := range objects {
 		if !o.Visible() || isAbsolutelyPositioned(o) {
@@ -371,12 +444,12 @@ func (lyt *elementLayout) minSizeRow(objects []fyne.CanvasObject) (w, h int) {
 		}
 
 		w += spacing + childSize.Width
-		spacing = lyt.el.Style.Spacing
+		spacing = b.Style.Spacing
 	}
 	return w, h
 }
 
-func (lyt *elementLayout) minSizeColumn(objects []fyne.CanvasObject) (w, h int) {
+func (b *Element) minSizeColumn(objects []fyne.CanvasObject) (w, h int) {
 	var spacing int
 	for _, o := range objects {
 		if !o.Visible() || isAbsolutelyPositioned(o) {
@@ -388,22 +461,33 @@ func (lyt *elementLayout) minSizeColumn(objects []fyne.CanvasObject) (w, h int) 
 			w = spacing + childSize.Width
 		}
 		h += spacing + childSize.Height
-		spacing = lyt.el.Style.Spacing
+		spacing = b.Style.Spacing
 	}
 	return w, h
 }
 
-func (lyt *elementLayout) layoutRow(objects []fyne.CanvasObject, minW int) {
-	claimed := lyt.el.claimed
-	st := lyt.el.Style
+func (b *Element) extraSpace() (x, y int) {
+	st := b.Style
+	pt, pr, pb, pl := st.Padding[0], st.Padding[1], st.Padding[2], st.Padding[3]
+	mt, mr, mb, ml := st.Margins[0], st.Margins[1], st.Margins[2], st.Margins[3]
+	bw := st.BorderWidth
+	x = 2*bw + ml + pl + mr + pr
+	y = 2*bw + mt + pt + mb + pb
+	return
+}
+
+func (b *Element) availDims() (w, h int) {
+	xSpace, ySpace := b.extraSpace()
+	return b.claimed.Width - xSpace, b.claimed.Height - ySpace
+}
+
+func (b *Element) layoutRow(objects []fyne.CanvasObject, minW int) {
+	claimed := b.claimed
+	st := b.Style
 	justi, align := st.Justi, st.Align
 	flowingObs, _ := layoutItems(objects)
 	n := len(flowingObs)
-	pr, pl := st.Padding[1], st.Padding[3]
-	mr, ml := st.Margins[1], st.Margins[3]
-	bw := st.BorderWidth
-	xSpace := 2*bw + ml + pl + mr + pr
-	availWidth := claimed.Width - xSpace
+	availWidth, availHeight := b.availDims()
 	spacing := st.Spacing
 
 	var padding int
@@ -436,14 +520,14 @@ func (lyt *elementLayout) layoutRow(objects []fyne.CanvasObject, minW int) {
 		var y int
 		switch align {
 		case AlignMiddle:
-			y = (claimed.Height - size.Height) / 2
+			y = (availHeight - size.Height) / 2
 		case AlignBaseline:
-			y = claimed.Height - size.Height
+			y = availHeight - size.Height
 		}
 
 		pos.Y = y
 
-		if lyt.el.Name == "appRow" {
+		if b.Name == "lbl" {
 			fmt.Printf("-- %T: pos = %v, claimed = %v, size = %v, n = %v \n", o, pos, claimed, size, len(flowingObs))
 		}
 
@@ -455,18 +539,13 @@ func (lyt *elementLayout) layoutRow(objects []fyne.CanvasObject, minW int) {
 	}
 }
 
-func (lyt *elementLayout) layoutColumn(objects []fyne.CanvasObject, minH int) {
-
-	claimed := lyt.el.claimed
-	st := lyt.el.Style
+func (b *Element) layoutColumn(objects []fyne.CanvasObject, minH int) {
+	claimed := b.claimed
+	st := b.Style
 	justi, align := st.Justi, st.Align
 	flowingObs, _ := layoutItems(objects)
 	n := len(flowingObs)
-	pt, pb := st.Padding[0], st.Padding[2]
-	mt, mb := st.Margins[0], st.Margins[2]
-	bw := st.BorderWidth
-	ySpace := 2*bw + mt + pt + mb + pb
-	availHeight := claimed.Height - ySpace
+	availWidth, availHeight := b.availDims()
 	spacing := st.Spacing
 
 	var padding int
@@ -494,35 +573,33 @@ func (lyt *elementLayout) layoutColumn(objects []fyne.CanvasObject, minH int) {
 		if !o.Visible() {
 			continue
 		}
-		// size := o.MinSize()
-		// o.Resize(size)
 		size := o.Size()
 
 		var x int
 		switch align {
 		case AlignCenter:
-			x = (claimed.Width - size.Width) / 2
+			x = (availWidth - size.Width) / 2
 		case AlignRight:
-			x = claimed.Width - size.Width
+			x = availWidth - size.Width
 		}
 
 		pos.X = x
 
 		o.Move(pos)
 
-		if lyt.el.Name == "mainWin" {
-			fmt.Printf("-- %T, position = %v, claimed.Width = %v, size = %v, padding = %v \n", o, pos, claimed.Width, size, padding)
+		if b.Name == "datum" {
+			fmt.Printf("-- %T, position = %v, claimed = %v, size = %v, padding = %v \n", o, pos, claimed, size, padding)
 		}
 
 		pos.Y += size.Height + padding + spacing
 	}
 }
 
-func (lyt *elementLayout) positionAbsolutely(obs []fyne.CanvasObject) {
+func (b *Element) positionAbsolutely(obs []fyne.CanvasObject) {
 	if len(obs) == 0 {
 		return
 	}
-	st, claimed := lyt.el.Style, lyt.el.claimed
+	st, claimed := b.Style, b.claimed
 	mt, mr, mb, ml := st.Margins[0], st.Margins[1], st.Margins[2], st.Margins[3]
 	bw := st.BorderWidth
 	absH := claimed.Height - mb - mt - 2*bw
@@ -532,9 +609,9 @@ func (lyt *elementLayout) positionAbsolutely(obs []fyne.CanvasObject) {
 		oSt := o.(*Element).Style // Already know this is an *Element because it was filtered through layoutItems.
 		t, r, b, l := oSt.Top, oSt.Right, oSt.Bottom, oSt.Left
 		sz := o.MinSize()
-		pos := fyne.NewPos(0, 0)
+		pos := fyne.NewPos(ml+bw, mt+bw)
 		if l != nil {
-			pos.X = *l
+			pos.X = *l + ml + bw
 			if r != nil {
 				sz.Width = absW - *r - pos.X
 			}
@@ -542,7 +619,7 @@ func (lyt *elementLayout) positionAbsolutely(obs []fyne.CanvasObject) {
 			pos.X = claimed.Width - *r - sz.Width - mr - bw
 		}
 		if t != nil {
-			pos.Y = *t
+			pos.Y = *t + mt + bw
 			if b != nil {
 				sz.Height = absH - *b - pos.Y
 			}
@@ -587,10 +664,15 @@ func (r *blockRenderer) Layout(sz fyne.Size) {
 	// to offset the within our own margins, padding, and borders.
 	kidBoxSize := r.el.claimed.Subtract(fyne.NewSize(xSpace, ySpace))
 	flowingKids, positionedKids := layoutItems(r.el.kids)
-	r.el.lyt.Layout(flowingKids, kidBoxSize)
-	r.el.lyt.positionAbsolutely(positionedKids)
+	r.el.Layout(flowingKids, kidBoxSize)
+	r.el.positionAbsolutely(positionedKids)
 
 	kidOffset := fyne.NewPos(lSpace, tSpace)
+
+	if r.el.Name == "hr" {
+		fmt.Println("--blockRenderer.Layout ", r.el.claimed, kidBoxSize)
+	}
+
 	applyOffset(flowingKids, kidOffset)
 
 	x, y := ml, mt
@@ -604,6 +686,7 @@ func (r *blockRenderer) Layout(sz fyne.Size) {
 			rect := canvas.NewRectangle(brdc)
 			rect.Resize(workingSize)
 			obs = append(obs, rect)
+			rect.Move(fyne.NewPos(x, y))
 		}
 		x += bw
 		y += bw
@@ -617,7 +700,7 @@ func (r *blockRenderer) Layout(sz fyne.Size) {
 		} else {
 			rect := canvas.NewRectangle(bgc)
 			rect.Resize(workingSize)
-			rect.Move(fyne.NewPos(bw, bw))
+			rect.Move(fyne.NewPos(x, y))
 			obs = append(obs, rect)
 		}
 	}

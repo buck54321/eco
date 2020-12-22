@@ -1031,8 +1031,6 @@ func (eco *Eco) runDCRWallet() error {
 			break
 		}
 
-		fmt.Println("--a.10")
-
 		// Delete the extraInput from the database, since it may contain
 		// a password.
 		if hasExtraInput {
@@ -1085,17 +1083,17 @@ func (eco *Eco) runDCRWallet() error {
 						h = bci.Headers
 					}
 
+					u.Status = "Syncing"
 					if h > 0 {
 						if int64(walletInfo.Blocks) >= h {
 							u.Progress = 1
+							u.Status = "Fully Synced"
 							synced = true
-
-							fmt.Println("--dcrwallet synced")
+						} else {
+							u.Progress = float32(walletInfo.Blocks) / float32(h)
 						}
-						u.Progress = float32(walletInfo.Blocks) / float32(h)
 					}
 
-					u.Status = "Syncing"
 				}
 				eco.sendSyncUpdate(u)
 

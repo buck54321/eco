@@ -47,7 +47,7 @@ func main() {
 	}})
 
 	if err != nil {
-		fmt.Println("Error writing archive.go: %v", err)
+		fmt.Println("Error writing archive.go:", err)
 		os.Exit(1)
 	}
 
@@ -94,8 +94,6 @@ func TarGz(src string, writers ...io.Writer) error {
 
 		// update the name to correctly reflect the desired destination when untaring
 		header.Name = strings.TrimPrefix(strings.Replace(file, src, "", -1), string(filepath.Separator))
-
-		fmt.Println("--header.Name", header.Name)
 
 		// write the header
 		if err := tw.WriteHeader(header); err != nil {

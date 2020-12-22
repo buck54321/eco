@@ -7,19 +7,15 @@ import (
 	"image/color"
 	"io/ioutil"
 	"math"
-	"path/filepath"
 	"strings"
 
 	"fyne.io/fyne"
 	"fyne.io/fyne/canvas"
-	"github.com/buck54321/eco"
 	"github.com/nfnt/resize"
 )
 
-var StaticRoot = filepath.Join(eco.EcoDir, "static")
-
 func MustLoadStaticResource(rsc string) *fyne.StaticResource {
-	b, err := ioutil.ReadFile(filepath.Join(StaticRoot, rsc))
+	b, err := ioutil.ReadFile(rsc)
 	if err != nil {
 		panic("error loading " + err.Error())
 	}
@@ -90,6 +86,14 @@ func NewSizedImage(rsc *fyne.StaticResource, w, h uint) *canvas.Image {
 	fyneImg.SetMinSize(fyne.NewSize(int(w), int(h)))
 	fyneImg.Resize(fyne.NewSize(int(w), int(h)))
 	return fyneImg
+}
+
+func NewHorizontalRule(strokeWidth int, c color.Color, my int) *Element {
+	return NewElement(&Style{
+		Height:  strokeWidth,
+		BgColor: c,
+		Margins: FourSpec{my, 0, my, 0},
+	})
 }
 
 func line(startX, startY, endX, endY int, strokeWidth float32, c color.Color) *canvas.Line {

@@ -39,6 +39,9 @@ env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o ${BUILD_DIR}/ecoservice
 cd ${ECOGUI_DIR}
 env CGO_ENABLED=1 go build -a -ldflags="-s -w" -o ${BUILD_DIR}/ecogui
 
+# Copy ecogui static files.
+cp -r ${ECOGUI_DIR}/static ${BUILD_DIR}
+
 # Build archive.go first, then our executable.
 cd ${ROOT_DIR}
 go run binvars/main.go

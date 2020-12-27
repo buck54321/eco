@@ -42,8 +42,6 @@ func InitLogging(name string) slog.Logger {
 	}
 
 	logFilename := name + ".log"
-	fmt.Println("--Creating log rotator at", filepath.Join(logDir, logFilename))
-
 	logRotator, err = rotator.New(filepath.Join(logDir, logFilename), 32*1024, false, maxLogRolls)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create file rotator: %v\n", err)

@@ -114,8 +114,6 @@ func Run(outerCtx context.Context) {
 		}
 		dcrdState = dcrdNewState()
 
-		fmt.Println("--storing eco state", dirtyEncode(state))
-
 		dbb.EncodeStore(ecoStateKey, state)
 		dbb.EncodeStore(svcKey(dcrd), dcrdState)
 		dcrWalletState = dcrWalletNewState()
@@ -306,9 +304,6 @@ func (eco *Eco) returnSyncChan(ch chan *FeedMessage) {
 }
 
 func (eco *Eco) sendSyncUpdate(pu *Progress) {
-
-	fmt.Println("--sendSyncUpdate", dirtyEncode(pu))
-
 	eco.syncMtx.Lock()
 	defer eco.syncMtx.Unlock()
 	st := eco.state.Services[pu.Service]
@@ -1049,8 +1044,6 @@ func (eco *Eco) runDCRWallet() error {
 			delay = time.Second * 5
 			select {
 			case <-timer.C:
-				fmt.Println("--checking sync", synced)
-
 				if walletInfo = getWalletInfo(); walletInfo == nil {
 					if synced {
 						synced = false

@@ -13,7 +13,6 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
-	"os/user"
 	"strings"
 	"time"
 
@@ -43,10 +42,6 @@ type Server struct {
 
 // NewServer is a constructor for an Server.
 func NewServer(eco *Eco) (*Server, error) {
-
-	u, _ := user.Current()
-	fmt.Println("--NewServer", u.Username)
-
 	// Find or create the key pair.
 	keyExists := fileExists(KeyPath)
 	certExists := fileExists(CertPath)
@@ -102,7 +97,6 @@ func (s *Server) Run(ctx context.Context) {
 
 	s.ctx = ctx
 	// Start serving.
-	fmt.Println("--hello")
 	log.Infof("Eco server running")
 	for {
 		conn, err := s.listener.Accept()

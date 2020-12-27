@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,9 +28,9 @@ const (
 )
 
 var (
-	logoRsrc, decreditonBGPath, decreditonBGOnPath, dexLauncherBGPath,
-	dexLaunchedBGPath, dcrctlLauncherBGPath, leftArrow, windowLogo, fontRegular,
-	fontBold *fyne.StaticResource
+	ecoLogo, decreditonLogo, dexLogo, dcrctlLogo, leftArrow, windowLogo,
+	fontRegular, fontBold *fyne.StaticResource
+
 	staticRoot = filepath.Join(eco.EcoDir, "static")
 )
 
@@ -38,12 +39,17 @@ func init() {
 	if _, err := os.Stat("static"); err == nil {
 		staticRoot = "static"
 	}
-	logoRsrc = loadStatic("eco-logo.png")
-	decreditonBGPath = loadStatic("decrediton-launcher.png")
-	decreditonBGOnPath = loadStatic("decrediton-launched.png")
-	dexLauncherBGPath = loadStatic("dex-launcher.png")
-	dexLaunchedBGPath = loadStatic("dex-launched.png")
-	dcrctlLauncherBGPath = loadStatic("dcrctl-plus.png")
+	ecoLogo = loadStatic("eco-logo.png")
+	decreditonLogo = loadStatic("decrediton.png")
+	dexLogo = loadStatic("dcrdex.png")
+	dcrctlLogo = loadStatic("dcrctl-plus.png")
+
+	// decreditonBGPath = loadStatic("decrediton-launcher.png")
+	// decreditonBGOnPath = loadStatic("decrediton-launched.png")
+	// dexLauncherBGPath = loadStatic("dex-launcher.png")
+	// dexLaunchedBGPath = loadStatic("dex-launched.png")
+	// dcrctlLauncherBGPath = loadStatic("dcrctl-plus.png")
+
 	leftArrow = loadStatic("larrow.svg")
 	windowLogo = loadStatic("dcr-logo.png")
 	// fontRegular = loadStatic("SourceSans3-Regular.ttf")
@@ -95,22 +101,22 @@ type GUI struct {
 		sdDatum      *ui.Element
 		hashRate     *ui.EcoLabel
 		hrDatum      *ui.Element
+		blockHeight  *ui.EcoLabel
+		bhDatum      *ui.Element
 		stats        *ui.Element
 	}
 
 	// Apps
 	decrediton struct {
 		launcher *ui.Element
-		offImg   *canvas.Image
-		onImg    *canvas.Image
 	}
+
 	dex struct {
 		launcher   *ui.Element
-		offImg     *canvas.Image
-		onImg      *canvas.Image
 		spinnerBox *ui.Element
 		spinner    *spinner
 	}
+
 	dcrctl struct {
 		// AppLauncher.
 		launcher *ui.Element
@@ -145,7 +151,7 @@ func NewGUI(ctx context.Context) *GUI {
 		window:   w,
 		mainView: mainView,
 	}
-	gui.logo = ui.NewSizedImage(logoRsrc, 0, 30)
+	gui.logo = ui.NewSizedImage(ecoLogo, 0, 30)
 
 	gui.initializeIntroView()
 	gui.initializeDownloadView()
@@ -258,25 +264,25 @@ func (gui *GUI) Run() {
 				case "dexc":
 					old := gui.storeDEXState(st)
 					if old == nil || old.On != st.On {
-						if st.On {
-							gui.dex.onImg.Show()
-							gui.dex.offImg.Hide()
-						} else {
-							gui.dex.onImg.Hide()
-							gui.dex.offImg.Show()
-						}
+						// if st.On {
+						// 	gui.dex.onImg.Show()
+						// 	gui.dex.offImg.Hide()
+						// } else {
+						// 	gui.dex.onImg.Hide()
+						// 	gui.dex.offImg.Show()
+						// }
 						canvas.Refresh(gui.dex.launcher)
 					}
 				case "decrediton":
 					old := gui.storeDecreditonState(st)
 					if old == nil || old.On != st.On {
-						if st.On {
-							gui.decrediton.onImg.Show()
-							gui.decrediton.offImg.Hide()
-						} else {
-							gui.decrediton.onImg.Hide()
-							gui.decrediton.offImg.Show()
-						}
+						// if st.On {
+						// 	gui.decrediton.onImg.Show()
+						// 	gui.decrediton.offImg.Hide()
+						// } else {
+						// 	gui.decrediton.onImg.Hide()
+						// 	gui.decrediton.offImg.Show()
+						// }
 						canvas.Refresh(gui.decrediton.launcher)
 					}
 				}
@@ -327,6 +333,21 @@ func (gui *GUI) Run() {
 			} else {
 				gui.home.hashRate.SetText("%.2f", float64(hps)/1e15)
 				gui.home.hrDatum.Refresh()
+				canvas.Refresh(gui.home.stats)
+			}
+		}
+
+		var blockHeight uint32
+		resp, err = eco.DCRCtl(gui.ctx, "getblockcount")
+		if err != nil {
+			log.Errorf("getblockcount error: %v", err)
+		} else {
+			err := json.Unmarshal([]byte(resp), &blockHeight)
+			if err != nil {
+				log.Errorf("error decoding getblockcount response: %v", err)
+			} else {
+				gui.home.blockHeight.SetText(strconv.Itoa(int(blockHeight)))
+				gui.home.bhDatum.Refresh()
 				canvas.Refresh(gui.home.stats)
 			}
 		}
@@ -497,7 +518,7 @@ func (gui *GUI) initializeHomeView() {
 			BorderRadius: 3,
 			BgColor:      ui.BgColor,
 			Padding:      ui.FourSpec{10, 20, 10, 20},
-			Margins:      ui.FourSpec{5, 5, 5, 5},
+			BorderBox:    true,
 		},
 			titleLbl,
 			el,
@@ -508,10 +529,10 @@ func (gui *GUI) initializeHomeView() {
 	}
 
 	dcrdDatum := newDatum("dcrd", 15, gui.home.dcrdProgress)
-	dcrdDatum.Style.MinW = "33%"
+	dcrdDatum.Style.Width = "48%"
 
 	dcrwDatum := newDatum("dcrwallet", 15, gui.home.dcrwProgress)
-	dcrwDatum.Style.MinW = "33%"
+	dcrwDatum.Style.Width = "48%"
 
 	progressRow := ui.NewElement(&ui.Style{
 		Ori:     ui.OrientationHorizontal,
@@ -522,16 +543,25 @@ func (gui *GUI) initializeHomeView() {
 		dcrwDatum,
 	)
 
-	makeAppLauncher := func(click func(*fyne.PointEvent), imgs ...fyne.CanvasObject) *ui.Element {
+	var logoHeight uint = 35
+
+	makeAppLauncher := func(desc string, click func(*fyne.PointEvent), els ...fyne.CanvasObject) *ui.Element {
+		els = append(els, ui.NewEcoLabel(desc, nil))
 		return ui.NewElement(&ui.Style{
-			Padding: ui.FourSpec{5, 10, 5, 10},
-			Cursor:  desktop.PointerCursor,
-			Display: ui.DisplayInline,
+			Align:        ui.AlignCenter,
+			Padding:      ui.FourSpec{10, 15, 10, 15},
+			Cursor:       desktop.PointerCursor,
+			Display:      ui.DisplayInline,
+			BgColor:      ui.StringToColor("#0a0a0a"),
+			BorderRadius: 2,
+			BorderWidth:  1,
+			BorderColor:  ui.StringToColor("#333"),
 			Listeners: ui.EventListeners{
 				Click: click,
 			},
+			Spacing: 5,
 		},
-			imgs...,
+			els...,
 		)
 	}
 
@@ -556,12 +586,8 @@ func (gui *GUI) initializeHomeView() {
 		return spinnerBox, spinner
 	}
 
-	// Decrediton
-	gui.decrediton.offImg = ui.NewSizedImage(decreditonBGPath, 0, 150)
-	gui.decrediton.onImg = ui.NewSizedImage(decreditonBGOnPath, 0, 150)
-	gui.decrediton.onImg.Hide()
-
-	gui.decrediton.launcher = makeAppLauncher(func(*fyne.PointEvent) {
+	dec := &gui.decrediton
+	dec.launcher = makeAppLauncher("Full-featured wallet", func(*fyne.PointEvent) {
 		st := gui.decreditonState()
 		if st == nil {
 			log.Errorf("Cannot start decrediton. Service not available.")
@@ -573,16 +599,13 @@ func (gui *GUI) initializeHomeView() {
 		}
 		eco.StartDecrediton(gui.ctx)
 	},
-		gui.decrediton.offImg,
-		gui.decrediton.onImg,
+		ui.NewSizedImage(decreditonLogo, 0, logoHeight),
 	)
 
 	// DEX
-	gui.dex.offImg = ui.NewSizedImage(dexLauncherBGPath, 0, 150)
-	gui.dex.onImg = ui.NewSizedImage(dexLaunchedBGPath, 0, 150)
-	gui.dex.onImg.Hide()
+	dex := &gui.dex
 	gui.dex.spinnerBox, gui.dex.spinner = newSpinnerBox()
-	gui.dex.launcher = makeAppLauncher(func(*fyne.PointEvent) {
+	dex.launcher = makeAppLauncher("Trade crypto", func(*fyne.PointEvent) {
 		st := gui.dexState()
 		if st == nil {
 			log.Errorf("Cannot start decrediton. Service not available.")
@@ -594,31 +617,32 @@ func (gui *GUI) initializeHomeView() {
 		}
 		eco.StartDEX(gui.ctx)
 	},
-		gui.dex.offImg,
-		gui.dex.onImg,
+		ui.NewSizedImage(dexLogo, 0, logoHeight),
 		gui.dex.spinnerBox,
 	)
 	gui.dex.launcher.Hide()
 
 	// DCRCtl+
+	ctl := &gui.dcrctl
 	gui.dcrctl.spinnerBox, gui.dcrctl.spinner = newSpinnerBox()
-	gui.dcrctl.launcher = makeAppLauncher(func(*fyne.PointEvent) {
+	ctl.launcher = makeAppLauncher("Query Decred", func(*fyne.PointEvent) {
 		gui.showDCRCtl()
 	},
-		ui.NewSizedImage(dcrctlLauncherBGPath, 0, 150),
+		ui.NewSizedImage(dcrctlLogo, 0, logoHeight),
 		gui.dcrctl.spinnerBox,
 	)
 
 	// A horizontal div (with wrapping?) holding image buttons to start various
 	// Decred services.
 	gui.home.appRow = ui.NewElement(&ui.Style{
-		Ori:   ui.OrientationHorizontal,
-		Justi: ui.JustifyBetween,
-		Align: ui.AlignCenter,
+		Ori:     ui.OrientationHorizontal,
+		Justi:   ui.JustifyStart,
+		Align:   ui.AlignCenter,
+		Spacing: 20,
 	},
-		gui.decrediton.launcher,
-		gui.dex.launcher,
-		gui.dcrctl.launcher,
+		dec.launcher,
+		dex.launcher,
+		ctl.launcher,
 	)
 	gui.home.appRow.Hide()
 
@@ -661,13 +685,16 @@ func (gui *GUI) initializeHomeView() {
 	gui.home.hashRate = ui.NewEcoLabel("...", datumStyle)
 	gui.home.hrDatum = newDatum("Hashrate", 13, valueWithUnit(gui.home.hashRate, "Ph/s"))
 
+	gui.home.blockHeight = ui.NewEcoLabel("...", datumStyle)
+	gui.home.bhDatum = newDatum("Blocks", 13, gui.home.blockHeight)
+
 	gui.home.stats = ui.NewElement(&ui.Style{
 		Ori:     ui.OrientationHorizontal,
 		Justi:   ui.JustifyStart,
 		Spacing: 20,
 		Margins: ui.FourSpec{10, 0, 10, 0},
 	},
-		gui.home.xcDatum, gui.home.sdDatum, gui.home.hrDatum,
+		gui.home.xcDatum, gui.home.sdDatum, gui.home.hrDatum, gui.home.bhDatum,
 	)
 
 	// topHR := ui.NewHorizontalRule(1, ui.DefaultBorderColor, 5)
@@ -787,22 +814,28 @@ func (gui *GUI) initializeDCRCtl() {
 	)
 	resultDiv.Hide()
 
+	inputElement := ui.NewElement(&ui.Style{
+		Padding:      ui.FourSpec{10, 10, 10, 10},
+		BgColor:      ui.InputColor,
+		BorderRadius: 3,
+		MaxW:         750,
+	}, input)
+
+	inputElement.Name = "inputElement"
+
 	gui.dcrctl.view = ui.NewElement(
 		&ui.Style{
 			Padding: ui.FourSpec{20, 0, 0, 0},
 			Align:   ui.AlignCenter,
 			Spacing: 15,
 		},
-		gui.logo,
+		ui.NewSizedImage(dcrctlLogo, 0, 30),
 		linkRow,
-		ui.NewElement(&ui.Style{
-			Padding:      ui.FourSpec{10, 10, 10, 10},
-			BgColor:      ui.InputColor,
-			BorderRadius: 3,
-			MaxW:         750,
-		}, input),
+		inputElement,
 		resultDiv,
 	)
+
+	gui.dcrctl.view.Name = "inputView"
 }
 
 func (gui *GUI) showDCRCtl() {

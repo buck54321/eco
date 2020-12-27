@@ -100,6 +100,12 @@ type Style struct {
 	// with width 100, not 10, since we prioritize the left/right pair over the
 	// hard-coded width. TODO: Use these for relative positioning too.
 	Left, Right, Top, Bottom *int
+	// BorderBox controls how padding and borders are applied to the elements
+	// with defined size. If BorderBox is true, the Width value will
+	// be equal to the Width = full_width = content + padding + borders (no
+	// margins). If BorderBox is false, then full_width = Width + padding +
+	// borders + content.
+	BorderBox bool
 	// expandVertically should be used with caution. In particular, it will
 	// probably not behave as desired when part of a column layout. It's really
 	// only intended to support a "main window" like outer wrapper that holds
@@ -172,6 +178,7 @@ func NewElement(st *Style, kids ...fyne.CanvasObject) *Element {
 }
 
 func (b *Element) InsertChild(o fyne.CanvasObject, idx int) {
+	o.Resize(b.claimed)
 	if idx < 0 || idx >= len(b.kids) {
 		b.kids = append(b.kids, o)
 	} else {
@@ -206,18 +213,40 @@ func (b *Element) parseDims(parentSize fyne.Size) {
 		}
 		vi, err := ParseChildDim(v, dim)
 		if err != nil {
-			fmt.Println(err.Error())
+			fmt.Println("ParseChildDim error: " + err.Error())
 			return 1
 		}
 		return vi
 	}
 	st := b.Style
-	b.parsedDims.width = parseDim(st.Width, parentSize.Width)
-	b.parsedDims.minW = parseDim(st.MinW, parentSize.Width)
-	b.parsedDims.maxW = parseDim(st.MaxW, parentSize.Width)
-	b.parsedDims.height = parseDim(st.Height, parentSize.Height)
-	b.parsedDims.minH = parseDim(st.MinH, parentSize.Height)
-	b.parsedDims.maxH = parseDim(st.MaxH, parentSize.Height)
+	pd := &b.parsedDims
+	pd.width = parseDim(st.Width, parentSize.Width)
+	pd.minW = parseDim(st.MinW, parentSize.Width)
+	pd.maxW = parseDim(st.MaxW, parentSize.Width)
+	pd.height = parseDim(st.Height, parentSize.Height)
+	pd.minH = parseDim(st.MinH, parentSize.Height)
+	pd.maxH = parseDim(st.MaxH, parentSize.Height)
+	if !st.BorderBox {
+		return
+	}
+
+	// BorderBox is true. Subtract paddings and border width.
+	xSpace := st.Padding[1] + st.Padding[3] + 2*st.BorderWidth
+	ySpace := st.Padding[0] + st.Padding[2] + 2*st.BorderWidth
+
+	subtract := func(v, sub int) int {
+		if v == 0 {
+			return 0
+		}
+		return v - sub
+	}
+	pd.width = subtract(pd.width, xSpace)
+	pd.minW = subtract(pd.minW, xSpace)
+	pd.maxW = subtract(pd.maxW, xSpace)
+	pd.height = subtract(pd.height, ySpace)
+	pd.minH = subtract(pd.minH, ySpace)
+	pd.maxH = subtract(pd.maxH, ySpace)
+
 }
 
 // Resize resizes this object to the given size.
@@ -228,6 +257,10 @@ func (b *Element) Resize(sz fyne.Size) {
 	}
 
 	b.parseDims(sz)
+
+	if b.Name == "inputElement" || b.Name == "inputView" {
+		fmt.Println("--Resize:", b.Name, sz, b.parsedDims.minW)
+	}
 
 	b.size = sz
 	b.claimed = b.minSize
@@ -249,6 +282,15 @@ func (b *Element) Resize(sz fyne.Size) {
 	if st.ExpandVertically {
 		b.claimed.Height = sz.Height
 	}
+
+	if b.Name == "inputElement" {
+		fmt.Println("--claimed:", b.claimed)
+	}
+
+	if b.Name == "inputElement" || b.Name == "inputView" {
+		fmt.Println("--claimed:", b.Name, b.claimed)
+	}
+
 	// // Give the kids a chance to be greedy too.
 	for _, o := range b.kids {
 		if isNativeInline(o) || isAbsolutelyPositioned(o) {
